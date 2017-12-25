@@ -70,7 +70,11 @@ class Register(StorageClassSpecifier):
         return "register"
 
 
-class TypeSpecifier(DeclSpecifier):
+class SpecifierQualifier(SimpleNode):
+    pass
+
+
+class TypeSpecifier(DeclSpecifier, SpecifierQualifier):
     pass
 
 
@@ -83,8 +87,7 @@ class SimpleTypeSpecifier(TypeSpecifier):
 
 
 class StructTypeSpecifier(TypeSpecifier):
-    # TODO
-    pass
+    __attrs__ = ("id", )
 
 
 class UnionTypeSpecifier(TypeSpecifier):
@@ -97,7 +100,7 @@ class EnumSpecifier(TypeSpecifier):
     pass
 
 
-class TypeQualifier(DeclSpecifier):
+class TypeQualifier(DeclSpecifier, SpecifierQualifier):
     def qualifier(self):
         raise NotImplementedError(
             "qualifier() not implemented for TypeQualifier '{}'"
@@ -130,7 +133,7 @@ class ConstExpr(SimpleNode):
 
 class Declarator(SimpleNode):
     # https://msdn.microsoft.com/en-us/library/e5ace6tf.aspx
-    __attrs__ = ("ptr", "direct_declarator")
+    __attrs__ = ("direct_declarator", "ptr")
     __types__ = {
         "ptr": optional(Pointer),
         "direct_declarator": DirectDeclarator,
@@ -251,15 +254,84 @@ class SimpleStmt(Stmt, SimpleNode):
     pass
 
 
+class AbstractDeclarator(SimpleNode):
+    # TODO
+    pass
+
+
+class TypeName(SimpleNode):
+    __attrs__ = ("specifier_qualifier_list", "abstract_declarator")
+    __types__ = {
+        "specifier_qualifier_list": [SpecifierQualifier],
+        "abstract_declarator": optional(AbstractDeclarator),
+    }
+    __defaults__ = {"abstract_declarator": None}
+
+    def line(self):
+        line = " ".join(q.line() for q in self.specifier_qualifier_list)
+        if self.abstract_declarator:
+            line += " " + self.abstract_declarator.line()
+        return line
+
+
 class Expr(SimpleNode):
     def precedence(self):
         raise NotImplementedError
 
     def scoped_line(self, other):
-        if self.prec() < other.prec():
+        if self.precedence() < other.precedence():
             return "(" + other.line() + ")"
         else:
             return other.line()
+
+
+class AtomicExpr(Expr):
+    def precedence(self):
+        return 0
+
+
+class ID(AtomicExpr):
+    __attrs__ = ("id",)
+    __types__ = {"id": str}
+
+    def line(self):
+        return self.id
+
+
+class Str(AtomicExpr):
+    __attrs__ = ("s",)
+    __types__ = {"s": str}
+
+    def line(self):
+        return '"{}"'.format(self.s)
+
+
+class Char(AtomicExpr):
+    __attrs__ = ("c",)
+    __types__ = {"c": str}
+
+    def __init__(self, *args, **kwargs):
+        assert len(self.c) == 1
+        super().__init__(*args, **kwargs)
+
+    def line(self):
+        return "'{}'".format(self.c)
+
+
+class Int(AtomicExpr):
+    __attrs__ = ("n",)
+    __types__ = {"n": int}
+
+    def line(self):
+        return str(self.n)
+
+
+class Float(AtomicExpr):
+    __attrs__ = ("n",)
+    __types__ = {"n": float}
+
+    def line(self):
+        return str(self.n)
 
 
 class Prec1Expr(Expr):
@@ -293,7 +365,7 @@ class Call(Prec1Expr):
 
     def line(self):
         return "{}({})".format(
-            self.func.line(), ", ".join(a.line() for a in self.args))
+            self.scoped_line(self.func), ", ".join(a.line() for a in self.args))
 
 
 class Subscript(Prec1Expr):
@@ -304,7 +376,7 @@ class Subscript(Prec1Expr):
     }
 
     def line(self):
-        return "{}[{}]".format(self.expr.line(), self.idx.line())
+        return "{}[{}]".format(self.scoped_line(self.expr), self.idx.line())
 
 
 class MemberAccess(Prec1Expr):
@@ -315,7 +387,7 @@ class MemberAccess(Prec1Expr):
     }
 
     def line(self):
-        return "{}.{}".format(self.expr.line(), self.member)
+        return "{}.{}".format(self.scoped_line(self.expr), self.member)
 
 
 class PtrMemberAccess(Prec1Expr):
@@ -326,11 +398,12 @@ class PtrMemberAccess(Prec1Expr):
     }
 
     def line(self):
-        return "{}->{}".format(self.expr.line(), self.member)
+        return "{}->{}".format(self.scoped_line(self.expr), self.member)
 
 
 class Prec2Expr(Expr):
-    pass
+    def precedence(self):
+        return 2
 
 
 class PreInc(Prec2Expr):
@@ -338,7 +411,7 @@ class PreInc(Prec2Expr):
     __types__ = {"expr": Expr}
 
     def line(self):
-        return "++{}".format(self.expr.line())
+        return "++{}".format(self.scoped_line(self.expr))
 
 
 class PreDec(Prec2Expr):
@@ -346,17 +419,308 @@ class PreDec(Prec2Expr):
     __types__ = {"expr": Expr}
 
     def line(self):
-        return "(--{})".format(self.expr.line())
+        return "--{}".format(self.scoped_line(self.expr))
 
 
 class UPlus(Prec2Expr):
     __attrs__ = ("expr",)
     __types__ = {"expr": Expr}
 
+    def line(self):
+        return "+{}".format(self.scoped_line(self.expr))
+
+
+class UMinus(Prec2Expr):
+    __attrs__ = ("expr",)
+    __types__ = {"expr": Expr}
+
+    def line(self):
+        return "-{}".format(self.scoped_line(self.expr))
+
+
+class LogicalNot(Prec2Expr):
+    __attrs__ = ("expr",)
+    __types__ = {"expr": Expr}
+
+    def line(self):
+        return "!{}".format(self.scoped_line(self.expr))
+
+
+class BitNot(Prec2Expr):
+    __attrs__ = ("expr",)
+    __types__ = {"expr": Expr}
+
+    def line(self):
+        return "~{}".format(self.scoped_line(self.expr))
+
+
+class Cast(Prec2Expr):
+    __attrs__ = ("expr", "type")
+    __types__ = {
+        "expr": Expr,
+        "type": TypeName,
+    }
+
+    def line(self):
+        return "({}){}".format(self.type.line(), self.scoped_line(self.expr))
+
+
+class Deref(Prec2Expr):
+    __attrs__ = ("expr",)
+    __types__ = {"expr": Expr}
+
+    def line(self):
+        return "*{}".format(self.scoped_line(self.expr))
+
+
+class AddrOf(Prec2Expr):
+    __attrs__ = ("expr",)
+    __types__ = {"expr": Expr}
+
+    def line(self):
+        return "&{}".format(self.scoped_line(self.expr))
+
+
+class SizeOf(Prec2Expr):
+    __attrs__ = ("expr",)
+    __types__ = {"expr": Expr}
+
+    def line(self):
+        return "sizeof({})".format(self.expr.line())
+
 
 class BinaryExpr(Expr):
-    # TODO
+    __attrs__ = ("lhs", "rhs")
+    __types__ = {
+        "lhs": Expr,
+        "rhs": Expr,
+    }
+
+    def op(self):
+        raise NotImplementedError
+
+    def line(self):
+        return "{} {} {}".format(self.scoped_line(self.lhs),
+                                 self.op(),
+                                 self.scoped_line(self.rhs))
+
+
+class Prec3Expr(Expr):
+    def precedence(self):
+        return 3
+
+
+class Mul(Prec3Expr, BinaryExpr):
+    def op(self):
+        return "*"
+
+
+class Div(Prec3Expr, BinaryExpr):
+    def op(self):
+        return "/"
+
+
+class Mod(Prec3Expr, BinaryExpr):
+    def op(self):
+        return "%"
+
+
+class Prec4Expr(Expr):
+    def precedence(self):
+        return 4
+
+
+class Add(Prec4Expr, BinaryExpr):
+    def op(self):
+        return "+"
+
+
+class Sub(Prec4Expr, BinaryExpr):
+    def op(self):
+        return "-"
+
+
+class Prec5Expr(Expr):
+    def precedence(self):
+        return 5
+
+
+class LShift(Prec5Expr, BinaryExpr):
+    def op(self):
+        return "<<"
+
+
+class RShift(Prec5Expr, BinaryExpr):
+    def op(self):
+        return ">>"
+
+
+class Prec6Expr(Expr):
+    def precedence(self):
+        return 6
+
+
+class Lt(Prec6Expr, BinaryExpr):
+    def op(self):
+        return "<"
+
+
+class Lte(Prec6Expr, BinaryExpr):
+    def op(self):
+        return "<="
+
+
+class Gt(Prec6Expr, BinaryExpr):
+    def op(self):
+        return ">"
+
+
+class Gte(Prec6Expr, BinaryExpr):
+    def op(self):
+        return ">="
+
+
+class Prec7Expr(Expr):
+    def precedence(self):
+        return 7
+
+
+class Eq(Prec7Expr, BinaryExpr):
+    def op(self):
+        return "=="
+
+
+class Ne(Prec7Expr, BinaryExpr):
+    def op(self):
+        return "!="
+
+
+class Prec8Expr(Expr):
+    def precedence(self):
+        return 8
+
+
+class BitAnd(Prec8Expr, BinaryExpr):
+    def op(self):
+        return "&"
+
+
+class Prec9Expr(Expr):
+    def precedence(self):
+        return 9
+
+
+class BitXor(Prec9Expr, BinaryExpr):
+    def op(self):
+        return "^"
+
+
+class Prec10Expr(Expr):
+    def precedence(self):
+        return 10
+
+
+class BitOr(Prec10Expr, BinaryExpr):
+    def op(self):
+        return "|"
+
+
+class Prec11Expr(Expr):
+    def precedence(self):
+        return 11
+
+
+class And(Prec11Expr, BinaryExpr):
+    def op(self):
+        return "&&"
+
+
+class Prec12Expr(Expr):
+    def precedence(self):
+        return 12
+
+
+class Or(Prec12Expr, BinaryExpr):
+    def op(self):
+        return "||"
+
+
+class Prec13Expr(Expr):
+    def precedence(self):
+        return 13
+
+
+class TernaryCondExpr(Prec13Expr):
+    __attrs__ = ("cond", "expr1", "expr2")
+
+    def line(self):
+        return "{} ? {} : {}".format(self.scoped_line(self.cond),
+                                     self.scoped_line(self.expr1),
+                                     self.scoped_line(self.expr2))
+
+
+class Prec14Expr(Expr):
+    def precedence(self):
+        return 14
+
+
+class AssignmentExpr(Prec14Expr, BinaryExpr):
     pass
+
+
+class SimpleAssignment(AssignmentExpr):
+    def op(self):
+        return "="
+
+
+class IAdd(AssignmentExpr):
+    def op(self):
+        return "+="
+
+
+class ISub(AssignmentExpr):
+    def op(self):
+        return "-="
+
+
+class IMul(AssignmentExpr):
+    def op(self):
+        return "*="
+
+
+class IDiv(AssignmentExpr):
+    def op(self):
+        return "/="
+
+
+class IMod(AssignmentExpr):
+    def op(self):
+        return "%="
+
+
+class ILShift(AssignmentExpr):
+    def op(self):
+        return "<<="
+
+
+class IRShift(AssignmentExpr):
+    def op(self):
+        return ">>="
+
+
+class IBitAnd(AssignmentExpr):
+    def op(self):
+        return "&="
+
+
+class IBitOr(AssignmentExpr):
+    def op(self):
+        return "|="
+
+
+class IBitXor(AssignmentExpr):
+    def op(self):
+        return "^="
 
 
 class InitializerList(Expr):
@@ -384,6 +748,14 @@ class InitDeclarator(SimpleStmt):
             return self.declarator.line()
 
 
+class ExprStmt(SimpleStmt):
+    __attrs__ = ("expr",)
+    __types__ = {"expr": Expr}
+
+    def line(self):
+        return "{};".format(self.expr.line())
+
+
 class Declaration(SimpleStmt):
     __attrs__= ("decl_specifiers", "init_declarator_list")
     __types__ = {
@@ -398,9 +770,9 @@ class Declaration(SimpleStmt):
         decl_spec_line = " ".join(d.line() for d in self.decl_specifiers)
         if self.init_declarator_list:
             init_declarator_line = ", ".join(d.line() for d in self.init_declarator_list)
-            return decl_specifiers + " " + init_declarator_line + ";"
+            return decl_spec_line + " " + init_declarator_line + ";"
         else:
-            return decl_specifiers + ";"
+            return decl_spec_line + ";"
 
 
 class FunctionDef(ExternalDecl):
@@ -422,17 +794,45 @@ class FunctionDef(ExternalDecl):
         else:
             line1 = ""
         line1 += self.declarator.line() + "{"
-        yield line1
 
-        for line in self.stmts:
-            yield INDENT_SIZE * " " + line
+        if self.stmts:
+            yield line1
 
-        yield "}"
+            for stmt in self.stmts:
+                for line in stmt.lines():
+                    yield INDENT_SIZE * " " + line
+
+            yield "}"
+        else:
+            yield line1 + "}"
+
+
+class Macro(Node):
+    pass
+
+
+class SimpleMacro(Macro, SimpleNode):
+    pass
+
+
+class Include(SimpleMacro):
+    __attrs__ = ("path", "is_system")
+    __types__ = {
+        "path": str,
+        "is_system": bool,
+    }
+    __defaults__ = {"is_system": False}
+
+    def line(self):
+        if self.is_system:
+            return "#include <{}>".format(self.path)
+        else:
+            return "#include \"{}\"".format(self.path)
 
 
 class TranslationUnit(Node):
     __attrs__ = ("external_decls",)
-    __types__ = {"external_decls": [ExternalDecl]}
+    __types__ = {"external_decls": [(ExternalDecl, Macro)]}
     __defaults__ = {"external_decls": []}
 
     def lines(self):

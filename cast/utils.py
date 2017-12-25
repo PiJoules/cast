@@ -123,7 +123,17 @@ class SlottedClass(metaclass=SlottedClassChecker):
                     __recursive_check(k, list(expected.keys())[0], original)
                 for v in val.values():
                     __recursive_check(v, list(expected.values())[0], original)
+            elif isinstance(expected, tuple):
+                for t in expected:
+                    try:
+                        __recursive_check(val, t, original)
+                    except Exception:
+                        continue
+                    else:
+                        return
+                __raise_type_error(attr, type(self), original, type(val))
             else:
+                assert isinstance(expected, type)
                 if not isinstance(val, expected):
                     __raise_type_error(attr, type(self), original, type(val))
 
