@@ -121,19 +121,23 @@ class Pointer(Declarator):
     __attrs__ = ("declarator", "type_qualifiers")
     __types__ = {
         "type_qualifiers": [TypeQualifier],
-        "declarator": Declarator,
+        "declarator": optional(Declarator),
     }
-    __defaults__ = {"type_qualifiers": []}
+    __defaults__ = {
+        "type_qualifiers": [],
+        "declarator": None,
+    }
 
     def line(self):
         line = "*"
         if self.type_qualifiers:
             line += " " + " ".join(q.line() for q in self.type_qualifiers)
-        line += self.declarator.line()
+        if self.declarator:
+            line += self.declarator.line()
         return line
 
 
-class StructDeclarator(SimpleNode):
+class BitField(SimpleNode):
     """The size is a bitfield which indicates the number of bits in the struct
     this member takes up.
 
@@ -164,27 +168,27 @@ class StructDeclarator(SimpleNode):
         return line
 
 
-class StructField(SimpleNode):
-    __attrs__ = ("spec_qualifiers", "struct_declarators")
+class RecordField(SimpleNode):
+    __attrs__ = ("spec_qualifiers", "declarators")
     __types__ = {
         "spec_qualifiers": [SpecifierQualifier],
-        "struct_declarators": [StructDeclarator],
+        "declarators": [(BitField, Declarator)],
     }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        assert self.spec_qualifiers and self.struct_declarators
+        assert self.spec_qualifiers and self.declarators
 
     def line(self):
         return (" ".join(q.line() for q in self.spec_qualifiers) + " " +
-                ", ".join(d.line() for d in self.struct_declarators))
+                ", ".join(d.line() for d in self.declarators) + ";")
 
 
-class StructType(TypeSpecifier):
+class RecordType(TypeSpecifier):
     __attrs__ = ("id", "struct_decls")
     __types__ = {
         "id": optional(str),
-        "struct_decls": [StructField],
+        "struct_decls": [RecordField],
     }
     __defaults__ = {"id": None}
 
@@ -192,8 +196,11 @@ class StructType(TypeSpecifier):
         super().__init__(*args, **kwargs)
         assert self.id or self.struct_decls
 
+    def record_name(self):
+        raise NotImplementedError
+
     def line(self):
-        line = "struct"
+        line = self.record_name()
         if self.id:
             line += " " + self.id
         if self.struct_decls:
@@ -201,9 +208,14 @@ class StructType(TypeSpecifier):
         return line
 
 
-class UnionType(TypeSpecifier):
-    # TODO
-    pass
+class StructType(RecordType):
+    def record_name(self):
+        return "struct"
+
+
+class UnionType(RecordType):
+    def record_name(self):
+        return "union"
 
 
 class EnumField(SimpleNode):
@@ -261,16 +273,10 @@ class ParamDecl(SimpleNode):
             return " ".join(s.line() for s in self.decl_specifiers)
 
 
-class AbstractParamDecl(SimpleNode):
-    # TODO
-    # https://msdn.microsoft.com/en-us/library/b198y5xs.aspx
-    pass
-
-
 class Params(SimpleNode):
     __attrs__ = ("param_decls", "has_varargs")
     __types__ = {
-        "param_decls": [(ParamDecl, AbstractParamDecl)],
+        "param_decls": [ParamDecl],
         "has_varargs": bool,
     }
     __defaults__ = {
@@ -298,37 +304,55 @@ class IDs(SimpleNode):
         return ", ".join(self.ids)
 
 
+class Scope(Declarator):
+    __attrs__ = ("declarator",)
+    __types__ = {"declarator": Declarator}
+
+    def line(self):
+        return "({})".format(self.declarator.line())
+
+
 class ArrayDeclarator(Declarator):
     __attrs__ = ("direct_declarator", "size")
     __types__ = {
-        "direct_declarator": Declarator,
+        "direct_declarator": optional(Declarator),
         "size": optional(Expr),
     }
     __defaults__ = {
+        "direct_declarator": None,
         "size": None,
     }
 
     def line(self):
+        line = ""
+        if self.direct_declarator:
+            line += self.direct_declarator.line()
+        line += "["
         if self.size:
-            return self.direct_declarator.line() + "[" + self.size.line() + "]"
-        else:
-            return self.direct_declarator.line() + "[]"
+            line += self.size.line()
+        line += "]"
+        return line
 
 
 class FuncDeclarator(Declarator):
     __attrs__ = ("direct_declarator", "arg_list")
     __types__ = {
-        "direct_declarator": (str, Declarator),
+        "direct_declarator": optional((str, Declarator)),
         "arg_list": optional((Params, IDs)),
     }
-    __defaults__ = {"arg_list": None}
+    __defaults__ = {
+        "direct_declarator": None,
+        "arg_list": None,
+    }
 
     def line(self):
-        line = str(self.direct_declarator)
+        line = ""
+        if self.direct_declarator:
+            line += str(self.direct_declarator)
+        line += "("
         if self.arg_list:
-            line += "({})".format(self.arg_list.line())
-        else:
-            line += "()"
+            line += self.arg_list.line()
+        line += ")"
         return line
 
 
@@ -340,16 +364,11 @@ class SimpleStmt(Stmt, SimpleNode):
     pass
 
 
-class AbstractDeclarator(SimpleNode):
-    # TODO
-    pass
-
-
 class TypeName(SimpleNode):
     __attrs__ = ("spec_qualifiers", "abstract_declarator")
     __types__ = {
         "spec_qualifiers": [SpecifierQualifier],
-        "abstract_declarator": optional(AbstractDeclarator),
+        "abstract_declarator": optional(Declarator),
     }
     __defaults__ = {"abstract_declarator": None}
 

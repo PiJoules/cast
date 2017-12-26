@@ -318,12 +318,59 @@ def main():
                 # Struct decl
                 Decl(
                     [StructType("s", [
-                        StructField(
+                        RecordField(
                             [Type("char")],
-                            [StructDeclarator(ID("c"))]
+                            [ID("c")]
+                        ),
+                        RecordField(
+                            [Type("int")],
+                            [Pointer(ID("p"))]
                         ),
                     ])],
                 ),
+
+                # Struct decl
+                Decl(
+                    [UnionType("u", [
+                        RecordField(
+                            [Type("char")],
+                            [ID("c")]
+                        ),
+                        RecordField(
+                            [Type("int")],
+                            [Pointer(ID("p"))]
+                        ),
+                    ])],
+                ),
+
+                # Abstract types
+                # Pointer to function that takes a char and int and returns an
+                # int
+                ExprStmt(Cast(
+                    TypeName(
+                        [Type("int")],
+                        FuncDeclarator(Scope(Pointer()), IDs(["char", "int"]))
+                    ),
+                    ID("p")
+                )),
+
+                # Array of size 3 that holds int pointers
+                ExprStmt(Cast(
+                    TypeName(
+                        [Type("int")],
+                        ArrayDeclarator(Pointer(), Int(3))
+                    ),
+                    ID("p")
+                )),
+
+                # Pointer to an array of size 3 that holds ints
+                ExprStmt(Cast(
+                    TypeName(
+                        [Type("int")],
+                        ArrayDeclarator(Pointer(), Int(3))
+                    ),
+                    ID("p")
+                )),
             ]
         )
     ])
