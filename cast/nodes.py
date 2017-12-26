@@ -118,27 +118,18 @@ class Expr(SimpleNode):
 
 
 class Pointer(Declarator):
-    # Forward declaration
-    pass
-
-
-class Pointer(Declarator):
-    __attrs__ = ("type_qualifiers", "ptr")
+    __attrs__ = ("declarator", "type_qualifiers")
     __types__ = {
         "type_qualifiers": [TypeQualifier],
-        "ptr": optional(Pointer),
+        "declarator": Declarator,
     }
-    __defaults__ = {
-        "type_qualifiers": [],
-        "ptr": None,
-    }
+    __defaults__ = {"type_qualifiers": []}
 
     def line(self):
         line = "*"
         if self.type_qualifiers:
             line += " " + " ".join(q.line() for q in self.type_qualifiers)
-        if self.ptr:
-            line += " " + self.ptr.line()
+        line += self.declarator.line()
         return line
 
 
@@ -231,23 +222,23 @@ class EnumField(SimpleNode):
 
 
 class EnumType(TypeSpecifier):
-    __attrs__ = ("id", "enums")
+    __attrs__ = ("id", "fields")
     __types__ = {
         "id": optional(str),
-        "enums": [EnumField],
+        "fields": [EnumField],
     }
     __defaults__ = {"id": None}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        assert self.id or self.enums
+        assert self.id or self.fields
 
     def line(self):
         line = "enum"
         if self.id:
             line += " " + self.id
-        if self.enums:
-            line += " {" + ", ".join(e.line() for e in self.enums) + "}"
+        if self.fields:
+            line += " {" + ", ".join(e.line() for e in self.fields) + "}"
         return line
 
 
@@ -362,6 +353,10 @@ class TypeName(SimpleNode):
     }
     __defaults__ = {"abstract_declarator": None}
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self.spec_qualifiers
+
     def line(self):
         line = " ".join(q.line() for q in self.spec_qualifiers)
         if self.abstract_declarator:
@@ -395,8 +390,8 @@ class Char(AtomicExpr):
     __types__ = {"c": str}
 
     def __init__(self, *args, **kwargs):
-        assert len(self.c) == 1
         super().__init__(*args, **kwargs)
+        assert len(self.c) == 1
 
     def line(self):
         return "'{}'".format(self.c)
@@ -522,7 +517,7 @@ class UMinus(Prec2Expr):
         return "-{}".format(self.scoped_line(self.expr))
 
 
-class LogicalNot(Prec2Expr):
+class Not(Prec2Expr):
     __attrs__ = ("expr",)
     __types__ = {"expr": Expr}
 
@@ -539,7 +534,7 @@ class BitNot(Prec2Expr):
 
 
 class Cast(Prec2Expr):
-    __attrs__ = ("expr", "type")
+    __attrs__ = ("type", "expr")
     __types__ = {
         "expr": Expr,
         "type": TypeName,
@@ -557,7 +552,7 @@ class Deref(Prec2Expr):
         return "*{}".format(self.scoped_line(self.expr))
 
 
-class AddrOf(Prec2Expr):
+class Addrof(Prec2Expr):
     __attrs__ = ("expr",)
     __types__ = {"expr": Expr}
 
@@ -565,12 +560,12 @@ class AddrOf(Prec2Expr):
         return "&{}".format(self.scoped_line(self.expr))
 
 
-class SizeOf(Prec2Expr):
-    __attrs__ = ("expr",)
-    __types__ = {"expr": Expr}
+class Sizeof(Prec2Expr):
+    __attrs__ = ("val",)
+    __types__ = {"val": (TypeName, Expr)}
 
     def line(self):
-        return "sizeof({})".format(self.expr.line())
+        return "sizeof({})".format(self.val.line())
 
 
 class BinaryExpr(Expr):
@@ -694,7 +689,7 @@ class Prec9Expr(Expr):
         return 9
 
 
-class BitXor(Prec9Expr, BinaryExpr):
+class Xor(Prec9Expr, BinaryExpr):
     def op(self):
         return "^"
 
@@ -734,7 +729,7 @@ class Prec13Expr(Expr):
         return 13
 
 
-class TernaryCondExpr(Prec13Expr):
+class TernaryCond(Prec13Expr):
     __attrs__ = ("cond", "expr1", "expr2")
 
     def line(self):
@@ -752,7 +747,7 @@ class AssignmentExpr(Prec14Expr, BinaryExpr):
     pass
 
 
-class SimpleAssignment(AssignmentExpr):
+class Assign(AssignmentExpr):
     def op(self):
         return "="
 
@@ -815,11 +810,25 @@ class InitializerList(Expr):
         return "{" + ", ".format(i.line() for i in self.initializers) + "}"
 
 
+class InitExpr(Expr):
+    # Expression that can only be used in an InitAssign
+    pass
+
+
+class InitList(InitExpr):
+    __attrs__ = ("elems",)
+    __types__ = {"elems": [(InitExpr, Expr)]}
+    __defaults__ = {"elems": []}
+
+    def line(self):
+        return "{" + ", ".join(e.line() for e in self.elems) + "}"
+
+
 class InitAssign(SimpleStmt):
     __attrs__ = ("declarator", "initializer")
     __types__ = {
         "declarator": Declarator,
-        "initializer": Expr,
+        "initializer": (InitList, Expr),
     }
 
     def line(self):
@@ -832,6 +841,77 @@ class ExprStmt(SimpleStmt):
 
     def line(self):
         return "{};".format(self.expr.line())
+
+
+class If(Stmt):
+    __attrs__ = ("cond", "body", "orelse")
+    __types__ = {
+        "cond": Expr,
+        "body": [Stmt],
+        "orelse": [Stmt],
+    }
+    __defaults__ = {
+        "body": [],
+        "orelse": [],
+    }
+
+    def lines(self):
+        yield "if ({})".format(self.cond.line()) + " {"
+        for stmt in self.body:
+            for line in stmt.lines():
+                yield INDENT_SIZE * " " + line
+
+        if self.orelse:
+            first_else = self.orelse[0]
+            if not isinstance(first_else, If):
+                yield "} else {"
+                for stmt in self.orelse:
+                    for line in stmt.lines():
+                        yield INDENT_SIZE * " " + line
+                yield "}"
+            else:
+                first_else_lines = first_else.lines()
+                yield "} else " + next(first_else_lines)
+                for line in first_else_lines:
+                    yield line
+                for stmt in self.orelse[1:]:
+                    for line in stmt.lines():
+                        yield line
+        else:
+            yield "}"
+
+
+class While(Stmt):
+    __attrs__ = ("cond", "body")
+    __types__ = {
+        "cond": Expr,
+        "body": [Stmt],
+    }
+    __defaults__ = {"body": []}
+
+    def lines(self):
+        yield "while ({})".format(self.cond.line()) + " {"
+        for stmt in self.body:
+            for line in stmt.lines():
+                yield INDENT_SIZE * " " + line
+        yield "}"
+
+
+class Dowhile(Stmt):
+    __attrs__ = ("cond", "body")
+    __types__ = {
+        "cond": Expr,
+        "body": [Stmt],
+    }
+    __defaults__ = {"body": []}
+
+    def lines(self):
+        yield "do {"
+        for stmt in self.body:
+            for line in stmt.lines():
+                yield INDENT_SIZE * " " + line
+        yield "}} while ({});".format(self.cond.line())
+
 
 
 class Decl(SimpleStmt, ExternalDecl):
@@ -851,6 +931,92 @@ class Decl(SimpleStmt, ExternalDecl):
             return decl_spec_line + " " + init_declarator_line + ";"
         else:
             return decl_spec_line + ";"
+
+
+class For(Stmt):
+    __attrs__ = ("init", "cond", "incr", "body")
+    __types__ = {
+        "init": optional((Decl, Expr)),
+        "cond": optional(Expr),
+        "incr": optional(Expr),
+        "body": [Stmt],
+    }
+    __defaults__ = {
+        "init": None,
+        "cond": None,
+        "incr": None,
+        "body": [],
+    }
+
+    def lines(self):
+        if isinstance(self.init, Decl):
+            decl_part = self.init.line()
+        elif isinstance(self.init, Expr):
+            decl_part = self.init.line() + ";"
+        else:
+            decl_part = ";"
+
+        if self.cond:
+            cond_part = self.cond.line() + ";"
+        else:
+            cond_part = ";"
+
+        if self.incr:
+            incr_part = self.incr.line()
+        else:
+            incr_part = ""
+
+        yield "for ({} {} {})".format(decl_part, cond_part, incr_part) + "{"
+        for stmt in self.body:
+            for line in stmt.lines():
+                yield INDENT_SIZE * " " + line
+        yield "}"
+
+
+class Case(SimpleNode):
+    __attrs__ = ("matches", "body")
+    __types__ = {
+        "matches": [Expr],
+        "body": [Stmt],
+    }
+
+    def lines(self):
+        for match in self.matches:
+            yield "case {}:".format(match.line())
+        for stmt in self.body:
+            for line in stmt.lines():
+                yield INDENT_SIZE * " " + line
+
+
+class Default(SimpleNode):
+    __attrs__ = ("body",)
+    __types__ = {"body": [Stmt]}
+
+    def lines(self):
+        yield "default:"
+        for stmt in self.body:
+            for line in stmt.lines():
+                yield INDENT_SIZE * " " + line
+
+
+class Break(SimpleStmt):
+    def line(self):
+        return "break;"
+
+
+class Switch(Stmt):
+    __attrs__ = ("cond", "cases")
+    __types__ = {
+        "cond": Expr,
+        "cases": [(Case, Default)],
+    }
+
+    def lines(self):
+        yield "switch ({})".format(self.cond.line()) + "{"
+        for case in self.cases:
+            for line in case.lines():
+                yield INDENT_SIZE * " " + line
+        yield "}"
 
 
 class FuncDef(ExternalDecl):

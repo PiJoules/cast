@@ -127,7 +127,7 @@ class SlottedClass(metaclass=SlottedClassChecker):
                 for t in expected:
                     try:
                         __recursive_check(val, t, original)
-                    except Exception:
+                    except TypeError:
                         continue
                     else:
                         return
