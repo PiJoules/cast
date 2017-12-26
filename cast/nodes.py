@@ -23,12 +23,7 @@ class SimpleNode(Node):
 
 
 class ExternalDecl(Node):
-    pass
-
-
-class Decl(ExternalDecl):
-    # TODO
-    pass
+    """Only stuff allowed outside of a function."""
 
 
 class DeclSpecifier(SimpleNode):
@@ -78,26 +73,12 @@ class TypeSpecifier(DeclSpecifier, SpecifierQualifier):
     pass
 
 
-class SimpleTypeSpecifier(TypeSpecifier):
+class Type(TypeSpecifier):
     __attrs__ = ("id",)
     __types__ = {"id": str}
 
     def line(self):
         return self.id
-
-
-class StructTypeSpecifier(TypeSpecifier):
-    __attrs__ = ("id", )
-
-
-class UnionTypeSpecifier(TypeSpecifier):
-    # TODO
-    pass
-
-
-class EnumSpecifier(TypeSpecifier):
-    # TODO
-    pass
 
 
 class TypeQualifier(DeclSpecifier, SpecifierQualifier):
@@ -117,36 +98,157 @@ class Volatile(TypeQualifier):
         return "volatile"
 
 
-class Pointer(SimpleNode):
-    # TODO
-    pass
-
-
-class DirectDeclarator(SimpleNode):
-    pass
-
-
-class ConstExpr(SimpleNode):
-    # TODO
-    pass
-
-
 class Declarator(SimpleNode):
-    # https://msdn.microsoft.com/en-us/library/e5ace6tf.aspx
-    __attrs__ = ("direct_declarator", "ptr")
+    """The part of the declaration that specifies the name of the variable (if
+    not abstract), if the type is an array, or if the type is a function.
+
+    https://msdn.microsoft.com/en-us/library/e5ace6tf.aspx
+    """
+
+
+class Expr(SimpleNode):
+    def precedence(self):
+        raise NotImplementedError
+
+    def scoped_line(self, other):
+        if self.precedence() < other.precedence():
+            return "(" + other.line() + ")"
+        else:
+            return other.line()
+
+
+class Pointer(Declarator):
+    # Forward declaration
+    pass
+
+
+class Pointer(Declarator):
+    __attrs__ = ("type_qualifiers", "ptr")
     __types__ = {
+        "type_qualifiers": [TypeQualifier],
         "ptr": optional(Pointer),
-        "direct_declarator": DirectDeclarator,
     }
     __defaults__ = {
+        "type_qualifiers": [],
         "ptr": None,
     }
 
     def line(self):
+        line = "*"
+        if self.type_qualifiers:
+            line += " " + " ".join(q.line() for q in self.type_qualifiers)
         if self.ptr:
-            return ptr.line() + self.direct_declarator.line()
-        else:
-            return self.direct_declarator.line()
+            line += " " + self.ptr.line()
+        return line
+
+
+class StructDeclarator(SimpleNode):
+    """The size is a bitfield which indicates the number of bits in the struct
+    this member takes up.
+
+    http://en.cppreference.com/w/cpp/language/bit_field
+    """
+    __attrs__ = ("declarator", "size")
+    __types__ = {
+        "declarator": optional(Declarator),
+        "size": optional(Expr),
+    }
+    __defaults__ = {
+        "declarator": None,
+        "size": None,
+    }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self.declarator or self.size
+
+    def line(self):
+        line = ""
+        if self.declarator:
+            line += self.declarator.line()
+            if self.size:
+                line += " "
+        if self.size:
+            line += ": " + self.constexpr.line()
+        return line
+
+
+class StructField(SimpleNode):
+    __attrs__ = ("spec_qualifiers", "struct_declarators")
+    __types__ = {
+        "spec_qualifiers": [SpecifierQualifier],
+        "struct_declarators": [StructDeclarator],
+    }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self.spec_qualifiers and self.struct_declarators
+
+    def line(self):
+        return (" ".join(q.line() for q in self.spec_qualifiers) + " " +
+                ", ".join(d.line() for d in self.struct_declarators))
+
+
+class StructType(TypeSpecifier):
+    __attrs__ = ("id", "struct_decls")
+    __types__ = {
+        "id": optional(str),
+        "struct_decls": [StructField],
+    }
+    __defaults__ = {"id": None}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self.id or self.struct_decls
+
+    def line(self):
+        line = "struct"
+        if self.id:
+            line += " " + self.id
+        if self.struct_decls:
+            line += " {" + " ".join(d.line() for d in self.struct_decls) + "}"
+        return line
+
+
+class UnionType(TypeSpecifier):
+    # TODO
+    pass
+
+
+class EnumField(SimpleNode):
+    __attrs__ = ("id", "val")
+    __types__ = {
+        "id": str,
+        "val": optional(Expr),
+    }
+    __defaults__ = {"val": None}
+
+    def line(self):
+        line = self.id
+        if self.val:
+            line += " = " + self.val.line()
+        return line
+
+
+class EnumType(TypeSpecifier):
+    __attrs__ = ("id", "enums")
+    __types__ = {
+        "id": optional(str),
+        "enums": [EnumField],
+    }
+    __defaults__ = {"id": None}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self.id or self.enums
+
+    def line(self):
+        line = "enum"
+        if self.id:
+            line += " " + self.id
+        if self.enums:
+            line += " {" + ", ".join(e.line() for e in self.enums) + "}"
+        return line
 
 
 class ParamDecl(SimpleNode):
@@ -174,7 +276,7 @@ class AbstractParamDecl(SimpleNode):
     pass
 
 
-class ParamTypeList(SimpleNode):
+class Params(SimpleNode):
     __attrs__ = ("param_decls", "has_varargs")
     __types__ = {
         "param_decls": [(ParamDecl, AbstractParamDecl)],
@@ -185,9 +287,9 @@ class ParamTypeList(SimpleNode):
     }
 
     def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         if self.has_varargs:
             assert self.param_decls
-        super().__init__(*args, **kwargs)
 
     def line(self):
         if self.has_varargs:
@@ -196,7 +298,7 @@ class ParamTypeList(SimpleNode):
             return ", ".join(d.line() for d in self.param_decls)
 
 
-class IDList(SimpleNode):
+class IDs(SimpleNode):
     __attrs__ = ("ids",)
     __types__ = {"ids": [str]}
     __defaults__ = {"ids": []}
@@ -205,19 +307,11 @@ class IDList(SimpleNode):
         return ", ".join(self.ids)
 
 
-class IDDeclarator(DirectDeclarator):
-    __attrs__ = ("id",)
-    __types__ = {"id": str}
-
-    def line(self):
-        return self.id
-
-
-class ArrayDeclarator(DirectDeclarator):
+class ArrayDeclarator(Declarator):
     __attrs__ = ("direct_declarator", "size")
     __types__ = {
-        "direct_declarator": DirectDeclarator,
-        "size": optional(ConstExpr),
+        "direct_declarator": Declarator,
+        "size": optional(Expr),
     }
     __defaults__ = {
         "size": None,
@@ -230,20 +324,21 @@ class ArrayDeclarator(DirectDeclarator):
             return self.direct_declarator.line() + "[]"
 
 
-class FunctionDeclarator(DirectDeclarator):
+class FuncDeclarator(Declarator):
     __attrs__ = ("direct_declarator", "arg_list")
     __types__ = {
-        "direct_declarator": DirectDeclarator,
-        "arg_list": optional((ParamTypeList, IDList)),
+        "direct_declarator": (str, Declarator),
+        "arg_list": optional((Params, IDs)),
     }
     __defaults__ = {"arg_list": None}
 
     def line(self):
+        line = str(self.direct_declarator)
         if self.arg_list:
-            return "{}({})".format(self.direct_declarator.line(),
-                                   ", ".join(a.line() for a in self.arg_list))
+            line += "({})".format(self.arg_list.line())
         else:
-            return "{}()".format(self.direct_declarator.line())
+            line += "()"
+        return line
 
 
 class Stmt(Node):
@@ -260,29 +355,18 @@ class AbstractDeclarator(SimpleNode):
 
 
 class TypeName(SimpleNode):
-    __attrs__ = ("specifier_qualifier_list", "abstract_declarator")
+    __attrs__ = ("spec_qualifiers", "abstract_declarator")
     __types__ = {
-        "specifier_qualifier_list": [SpecifierQualifier],
+        "spec_qualifiers": [SpecifierQualifier],
         "abstract_declarator": optional(AbstractDeclarator),
     }
     __defaults__ = {"abstract_declarator": None}
 
     def line(self):
-        line = " ".join(q.line() for q in self.specifier_qualifier_list)
+        line = " ".join(q.line() for q in self.spec_qualifiers)
         if self.abstract_declarator:
             line += " " + self.abstract_declarator.line()
         return line
-
-
-class Expr(SimpleNode):
-    def precedence(self):
-        raise NotImplementedError
-
-    def scoped_line(self, other):
-        if self.precedence() < other.precedence():
-            return "(" + other.line() + ")"
-        else:
-            return other.line()
 
 
 class AtomicExpr(Expr):
@@ -290,7 +374,7 @@ class AtomicExpr(Expr):
         return 0
 
 
-class ID(AtomicExpr):
+class ID(AtomicExpr, Declarator):
     __attrs__ = ("id",)
     __types__ = {"id": str}
 
@@ -731,21 +815,15 @@ class InitializerList(Expr):
         return "{" + ", ".format(i.line() for i in self.initializers) + "}"
 
 
-class InitDeclarator(SimpleStmt):
+class InitAssign(SimpleStmt):
     __attrs__ = ("declarator", "initializer")
     __types__ = {
         "declarator": Declarator,
-        "initializer": optional(Expr),
-    }
-    __defaults__ = {
-        "initializer": None,
+        "initializer": Expr,
     }
 
     def line(self):
-        if self.initializer:
-            return self.declarator.line() + " = " + self.initializer.line()
-        else:
-            return self.declarator.line()
+        return self.declarator.line() + " = " + self.initializer.line()
 
 
 class ExprStmt(SimpleStmt):
@@ -756,11 +834,11 @@ class ExprStmt(SimpleStmt):
         return "{};".format(self.expr.line())
 
 
-class Declaration(SimpleStmt):
+class Decl(SimpleStmt, ExternalDecl):
     __attrs__= ("decl_specifiers", "init_declarator_list")
     __types__ = {
         "decl_specifiers": [DeclSpecifier],
-        "init_declarator_list": optional([InitDeclarator]),
+        "init_declarator_list": optional([(Declarator, InitAssign)]),
     }
     __defaults__ = {
         "init_declarator_list": None,
@@ -775,7 +853,7 @@ class Declaration(SimpleStmt):
             return decl_spec_line + ";"
 
 
-class FunctionDef(ExternalDecl):
+class FuncDef(ExternalDecl):
     __attrs__ = ("decl_specifiers", "declarator", "stmts")
     __types__ = {
         "declarator": Declarator,
@@ -828,6 +906,42 @@ class Include(SimpleMacro):
             return "#include <{}>".format(self.path)
         else:
             return "#include \"{}\"".format(self.path)
+
+
+class Define(SimpleMacro):
+    __attrs__ = ("id", "definition")
+    __types__ = {
+        "id": str,
+        "definition": optional(str),
+    }
+    __defaults__ = {"definition": None}
+
+    def line(self):
+        if self.definition:
+            return "#define {} {}".format(self.id, self.definition)
+        else:
+            return "#define {}".format(self.id)
+
+
+class Ifdef(SimpleMacro):
+    __attrs__ = ("id",)
+    __types__ = {"id": str}
+
+    def line(self):
+        return "#ifdef {}".format(self.id)
+
+
+class Ifndef(SimpleMacro):
+    __attrs__ = ("id",)
+    __types__ = {"id": str}
+
+    def line(self):
+        return "#ifndef {}".format(self.id)
+
+
+class Endif(SimpleMacro):
+    def line(self):
+        return "#endif"
 
 
 class TranslationUnit(Node):
