@@ -2,6 +2,7 @@ import ply.lex as lex
 import ply.yacc as yacc
 
 from .nodes import *
+from .cast import nodes as cnodes
 
 """
 list[A] func(){
@@ -46,7 +47,7 @@ tokens = (
 
     "ASSIGN",
 
-    "SEMICOL",
+    "SEMICOL", "DOT",
 
     "EQ",
 ) + tuple(RESERVED.values())
@@ -75,6 +76,7 @@ t_LBRACK = r"\["
 t_RBRACK = r"\]"
 t_ASSIGN = r"=(?!=)"
 t_SEMICOL = r";"
+t_DOT = r"\."
 t_EQ = r"=="
 t_ignore = " \t"
 
@@ -90,20 +92,38 @@ def t_newline(t):
     t.lexer.lineno += len(t.value)
 
 
+def col(tok):
+    last_cr = tok.lexer.lexdata.rfind("\n", 0, tok.lexpos)
+    if last_cr < 0:
+        last_cr = 0
+    return tok.lexpos - last_cr
+
+
 def t_error(t):
-    if len(t) > 10:
+    if len(t.value) > 10:
         part = t.value[:10] + "..."
     else:
         part = t.value[:10]
-    raise RuntimeError("Unable to handle substring '{}'".format(
-        part
-    ))
+    lineno = t.lineno
+    colno = col(t)
+
+    raise RuntimeError(
+        "Unable to match substring '{}' at line {}, col {} against any token".format(
+            part, lineno, colno
+        ))
 
 
 lexer = lex.lex()
 
 
-#precedence = (,)
+precedence = (
+    (
+        "left",
+        "DOT",      # Member access
+        "LPAR",     # Call
+    ),
+)
+
 
 def p_translation_unit_empty(p):
     "translation_unit : empty"
@@ -139,11 +159,16 @@ def p_decl_stmt(p):
 
 def p_decl(p):
     "decl : type_name ID"
-    p[0] = Decl(p[1], p[2])
+    p[0] = VarDecl(p[1], p[2])
+
+
+def p_decl_with_init(p):
+    "decl : type_name ID ASSIGN expr"
+    p[0] = VarDecl(p[1], p[2], p[4])
 
 
 def p_func_def(p):
-    "func_def : type_name ID LPAR args RPAR LBRACE stmts RBRACE"
+    "func_def : type_name ID LPAR params RPAR LBRACE stmts RBRACE"
     p[0] = FuncDef(p[1], p[2], p[4], p[7])
 
 
@@ -157,8 +182,8 @@ def p_type_name_list(p):
     p[0] = ListType(p[3])
 
 
-def p_args_empty(p):
-    "args : empty"
+def p_params_empty(p):
+    "params : empty"
     p[0] = []
 
 
@@ -178,8 +203,75 @@ def p_stmts(p):
 
 
 def p_stmt(p):
-    "stmt : decl_stmt"
+    """stmt : decl_stmt
+            | expr_stmt
+            | return_stmt
+            | assign
+    """
     p[0] = p[1]
+
+
+def p_assign(p):
+    "assign : assignable ASSIGN expr SEMICOL"
+    p[0] = Assign(p[1], p[3])
+
+
+def p_assignable(p):
+    """assignable : id_expr"""
+    p[0] = p[1]
+
+
+def p_return_stmt_no_val(p):
+    "return_stmt : RETURN SEMICOL"
+    p[0] = Return()
+
+
+def p_return_stmt(p):
+    "return_stmt : RETURN expr SEMICOL"
+    p[0] = Return(p[2])
+
+
+def p_expr_stmt(p):
+    "expr_stmt : expr SEMICOL"
+    p[0] = ExprStmt(p[1])
+
+
+def p_expr(p):
+    """expr : call
+            | member_access
+            | id_expr
+    """
+    p[0] = p[1]
+
+
+def p_member_access(p):
+    "member_access : expr DOT ID"
+    p[0] = Access(p[1], p[3])
+
+
+def p_expr_id(p):
+    "id_expr : ID"
+    p[0] = ID(p[1])
+
+
+def p_call(p):
+    "call : expr LPAR exprs RPAR"
+    p[0] = Call(p[1], p[3])
+
+
+def p_exprs_empty(p):
+    "exprs : empty"
+    p[0] = []
+
+
+def p_exprs_one(p):
+    "exprs : expr"
+    p[0] = [p[1]]
+
+
+def p_exprs(p):
+    "exprs : exprs expr"
+    p[0] = p[1] + [p[2]]
 
 
 def p_empty(p):
@@ -187,7 +279,95 @@ def p_empty(p):
 
 
 def p_error(p):
-    raise RuntimeError("Syntax error at '{}'".format(p.value))
+    lineno = p.lineno
+    colno = col(p)
+    raise RuntimeError(
+        "Syntax error '{}' at line {}, col {}".format(
+            p.value, lineno, colno
+        ))
 
 
 parser = yacc.yacc()
+
+
+class Compiler:
+    def __init__(self):
+        self.__code = None
+        self.__lang_ast = None
+        self.__c_ast = None
+        self.__call_stack = []
+
+    def compile(self, code):
+        module = self.__lang_ast = parser.parse(code)
+        self.__c_ast = self.visit(module)
+
+    def lang_ast(self):
+        return self.__lang_ast
+
+    def visit(self, node):
+        name = node.__class__.__name__
+        method_name = "visit_" + name
+        self.__call_stack.append(method_name)
+
+        if hasattr(self, method_name):
+            method = getattr(self, method_name)
+            result = method(node)
+            self.__call_stack.pop()
+            return result
+        else:
+            self.__dump_call_stack()
+            raise NotImplementedError(
+                "No visit method implemented for node '{}'".format(
+                    name
+                ))
+
+    def __dump_call_stack(self):
+        print("------- Visitor Stack -------")
+        for func in self.__call_stack:
+            print(func)
+
+    def type_info_from_vardecl(self, vardecl):
+        varname = vardecl.id
+        typename = vardecl.type
+        return self.type_info_from_typename_and_id(typename, varname)
+
+    def type_info_from_typename_and_id(self, typename, varname):
+        if isinstance(typename, ListType):
+            raise NotImplementedError
+        elif isinstance(typename, ID):
+            type_specs = [cnodes.Type(typename.id)]
+            declarators = [cnodes.ID(varname)]
+            return type_specs, declarators
+        else:
+            raise NotImplementedError("Unable to handle typename '{}'".format(
+                typename.__class__.__name__
+            ))
+
+    def visit_DeclStmt(self, decl_stmt):
+        # TODO: Implement for other decls
+        assert isinstance(decl_stmt.decl, VarDecl)
+
+        type_specs, declarators = self.type_info_from_vardecl(decl_stmt.decl)
+
+        cdecl = cnodes.Decl(type_specs, declarators)
+        return cdecl
+
+    def visit_FuncDef(self, func_def):
+        return_t = func_def.return_type
+        func_name = func_def.id
+        args = func_def.args
+        body = func_def.body
+
+        type_specs, declarators = self.type_info_from_typename_and_id(return_t, func_name)
+        cbody = [self.visit(stmt) for stmt in body]
+
+        cfunc_def = cnodes.FuncDef(
+            type_specs,
+            declarators,
+            cbody
+        )
+        return cfunc_def
+
+    def visit_TranslationUnit(self, tu):
+        cnodes = [self.visit(d) for d in tu.external_decls]
+        return cnodes.TranslationUnit(cnodes)

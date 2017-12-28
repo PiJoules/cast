@@ -1,4 +1,4 @@
-from cast.nodes import *
+from compiler.cast.nodes import *
 
 
 def main():

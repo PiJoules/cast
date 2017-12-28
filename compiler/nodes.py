@@ -1,4 +1,4 @@
-from .utils import SlottedClass, optional
+from .cast.utils import SlottedClass, optional
 
 
 INDENT_SIZE = 4
@@ -23,12 +23,18 @@ class SimpleNode(Node):
 
 
 class Decl(Node):
-    # TODO
+    pass
+
+
+class SimpleDecl(Decl, SimpleNode):
     pass
 
 
 class Stmt(Node):
-    # TODO
+    pass
+
+
+class Expr(SimpleNode):
     pass
 
 
@@ -48,19 +54,36 @@ class ListType(TypeName):
         return "list[{}]".format(self.contents.line())
 
 
-class Decl(SimpleNode):
-    __attrs__ = ("type", "id")
+class VarDecl(SimpleDecl):
+    __attrs__ = ("type", "id", "expr")
     __types__ = {
         "type": TypeName,
         "id": str,
+        "expr": optional(Expr),
     }
+    __defaults__ = {"expr": None}
 
     def line(self):
-        return "{} {}".format(self.type.line(), self.id)
+        if not self.expr:
+            return "{} {}".format(self.type.line(), self.id)
+        else:
+            return "{} {} = {}".format(
+                self.type.line(), self.id, self.expr.line())
 
 
 class SimpleStmt(Stmt, SimpleNode):
     pass
+
+
+class Assign(SimpleStmt):
+    __attrs__ = ("assignable", "expr")
+    __types__ = {
+        "assignable": Expr,
+        "expr": Expr,
+    }
+
+    def line(self):
+        return "{} = {};".format(self.assignable.line(), self.expr.line())
 
 
 class DeclStmt(SimpleStmt, ExternalStmt):
@@ -71,7 +94,27 @@ class DeclStmt(SimpleStmt, ExternalStmt):
         return self.decl.line() + ";"
 
 
-class ID(TypeName):
+class Return(SimpleStmt):
+    __attrs__ = ("expr",)
+    __types__ = {"expr": optional(Expr)}
+    __defaults__ = {"expr": None}
+
+    def line(self):
+        if self.expr:
+            return "return {};".format(self.expr.line())
+        else:
+            return "return;"
+
+
+class ExprStmt(SimpleStmt):
+    __attrs__ = ("expr",)
+    __types__ = {"expr": Expr}
+
+    def line(self):
+        return self.expr.line() + ";"
+
+
+class ID(TypeName, Expr):
     __attrs__ = ("id",)
     __types__ = {"id": str}
 
@@ -79,12 +122,37 @@ class ID(TypeName):
         return self.id
 
 
+class Access(Expr):
+    __attrs__ = ("expr", "member")
+    __types__ = {
+        "expr": Expr,
+        "member": str,
+    }
+
+    def line(self):
+        return "{}.{}".format(self.expr.line(), self.member)
+
+
+class Call(Expr):
+    __attrs__ = ("expr", "args")
+    __types__ = {
+        "expr": Expr,
+        "args": [Expr],
+    }
+    __defaults__ = {"args": []}
+
+    def line(self):
+        return "{}({})".format(
+            self.expr.line(),
+            ", ".join(a.line() for a in self.args))
+
+
 class FuncDef(ExternalStmt):
     __attrs__ = ("return_type", "id", "args", "body")
     __types__ = {
         "return_type": TypeName,
         "id": str,
-        "args": [Decl],
+        "args": [VarDecl],
         "body": [Stmt],
     }
     __defaults__ = {
