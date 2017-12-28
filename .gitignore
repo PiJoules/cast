@@ -106,3 +106,7 @@ venv.bak/
 # ply 
 compiler/parser.out
 compiler/parsetab.py
+
+# compiler 
+*.c
+*.h

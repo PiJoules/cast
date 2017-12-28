@@ -1,0 +1,7 @@
+#include "{hdr}"
+
+void {mangled_name}_append({content_type}* item){{
+}}
+
+void {mangled_name}_print(){{
+}}

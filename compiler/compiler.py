@@ -290,6 +290,25 @@ def p_error(p):
 parser = yacc.yacc()
 
 
+BASE_C_HEADERS = (
+    "stdint.h",
+    "stdlib.h",
+    "stdio.h",
+)
+
+
+BASE_LANG_TYPE_REPLACEMENTS = {
+    "char": "char",
+    "int32": "int32_t",
+    "int64": "int64_t",
+    "uint32": "uint32_t",
+    "uint64_t": "uint64_t",
+}
+
+
+BASE_LANG_TYPES = set(BASE_LANG_TYPE_REPLACEMENTS.keys())
+
+
 class Compiler:
     def __init__(self):
         self.__code = None
@@ -297,12 +316,24 @@ class Compiler:
         self.__c_ast = None
         self.__call_stack = []
 
+        self.__known_types = set(BASE_LANG_TYPES)
+        self.__list_content_types = set()
+        self.__pending_includes = set()
+        self.__generated_files = set()
+
     def compile(self, code):
         module = self.__lang_ast = parser.parse(code)
         self.__c_ast = self.visit(module)
+        assert not self.__call_stack
 
     def lang_ast(self):
         return self.__lang_ast
+
+    def c_ast(self):
+        return self.__c_ast
+
+    def generated_files(self):
+        return self.__generated_files
 
     def visit(self, node):
         name = node.__class__.__name__
@@ -331,17 +362,90 @@ class Compiler:
         typename = vardecl.type
         return self.type_info_from_typename_and_id(typename, varname)
 
-    def type_info_from_typename_and_id(self, typename, varname):
+    def mangled_typename(self, typename):
         if isinstance(typename, ListType):
-            raise NotImplementedError
+            return "{}_list".format(self.mangled_typename(typename.contents))
         elif isinstance(typename, ID):
-            type_specs = [cnodes.Type(typename.id)]
+            if typename.id not in self.__known_types:
+                raise RuntimeError("Unknown type '{}'".format(typename.id))
+            return BASE_LANG_TYPE_REPLACEMENTS[typename.id]
+        else:
+            raise NotImplementedError("Unable to mangle typename '{}'".format(
+                typename.__class__.__name__
+            ))
+
+    def __create_list_header(self, contents, mangled_name):
+        hdr = mangled_name + ".h"
+        with open("compiler/list_hdr.template", "r") as f:
+            template = f.read()
+            hdr_txt = template.format(
+                mangled_name=mangled_name,
+                content_type=self.mangled_typename(contents)
+            )
+        with open(hdr, "w") as f:
+            f.write(hdr_txt)
+        return hdr
+
+    def __create_list_source(self, contents, mangled_name, hdr):
+        src = mangled_name + ".c"
+        with open("compiler/list_src.template", "r") as f:
+            template = f.read()
+            src_txt = template.format(
+                mangled_name=mangled_name,
+                content_type=self.mangled_typename(contents),
+                hdr=hdr,
+            )
+        with open(src, "w") as f:
+            f.write(src_txt)
+        return src
+
+    def type_info_from_typename_and_id(self, typename, varname):
+        mangled_name = self.mangled_typename(typename)
+        if isinstance(typename, ListType):
+            if mangled_name not in self.__list_content_types:
+                hdr = self.__create_list_header(typename.contents, mangled_name)
+                src = self.__create_list_source(typename.contents, mangled_name, hdr)
+                self.__generated_files.add(hdr)
+                self.__generated_files.add(src)
+
+                self.__list_content_types.add(mangled_name)
+                self.__pending_includes.add(hdr)
+
+            type_specs = [cnodes.Type(mangled_name)]
+            declarators = [cnodes.ID(varname)]
+            return type_specs, declarators
+        elif isinstance(typename, ID):
+            type_specs = [cnodes.Type(mangled_name)]
             declarators = [cnodes.ID(varname)]
             return type_specs, declarators
         else:
             raise NotImplementedError("Unable to handle typename '{}'".format(
                 typename.__class__.__name__
             ))
+
+    def visit_ID(self, id_node):
+        return cnodes.ID(id_node.id)
+
+    def visit_Access(self, access):
+        return cnodes.PtrMemberAccess(
+            self.visit(access.expr),
+            access.member
+        )
+
+    def visit_Call(self, call):
+        return cnodes.Call(
+            self.visit(call.expr),
+            [self.visit(a) for a in call.args]
+        )
+
+    def visit_ExprStmt(self, expr_stmt):
+        return cnodes.ExprStmt(self.visit(expr_stmt.expr))
+
+    def visit_Return(self, return_stmt):
+        if return_stmt.expr:
+            return cnodes.Return(self.visit(return_stmt.expr))
+        else:
+            return cnodes.Return()
 
     def visit_DeclStmt(self, decl_stmt):
         # TODO: Implement for other decls
@@ -352,6 +456,12 @@ class Compiler:
         cdecl = cnodes.Decl(type_specs, declarators)
         return cdecl
 
+    def visit_Assign(self, assign):
+        return cnodes.ExprStmt(cnodes.Assign(
+            self.visit(assign.assignable),
+            self.visit(assign.expr)
+        ))
+
     def visit_FuncDef(self, func_def):
         return_t = func_def.return_type
         func_name = func_def.id
@@ -359,15 +469,20 @@ class Compiler:
         body = func_def.body
 
         type_specs, declarators = self.type_info_from_typename_and_id(return_t, func_name)
+        assert len(declarators) == 1
+
         cbody = [self.visit(stmt) for stmt in body]
 
         cfunc_def = cnodes.FuncDef(
             type_specs,
-            declarators,
+            declarators[0],
             cbody
         )
         return cfunc_def
 
     def visit_TranslationUnit(self, tu):
-        cnodes = [self.visit(d) for d in tu.external_decls]
-        return cnodes.TranslationUnit(cnodes)
+        includes = [cnodes.Include(h, True) for h in BASE_C_HEADERS]
+        stmts = [self.visit(d) for d in tu.external_decls]
+        includes += [cnodes.Include(i) for i in self.__pending_includes]
+        stmts = includes + stmts
+        return cnodes.TranslationUnit(stmts)

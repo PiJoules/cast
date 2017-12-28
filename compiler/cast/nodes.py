@@ -854,6 +854,18 @@ class InitAssign(SimpleStmt):
         return self.declarator.line() + " = " + self.initializer.line()
 
 
+class Return(SimpleStmt):
+    __attrs__ = ("expr",)
+    __types__ = {"expr": optional(Expr)}
+    __defaults__ = {"expr": None}
+
+    def line(self):
+        if self.expr:
+            return "return {};".format(self.expr.line())
+        else:
+            return "return;"
+
+
 class ExprStmt(SimpleStmt):
     __attrs__ = ("expr",)
     __types__ = {"expr": Expr}

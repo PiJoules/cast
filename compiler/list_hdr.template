@@ -1,0 +1,7 @@
+#ifndef {mangled_name}_HDR_
+#define {mangled_name}_HDR_
+
+void {mangled_name}_append({content_type}*):
+void {mangled_name}_print();
+
+#endif
