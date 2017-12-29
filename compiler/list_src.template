@@ -5,3 +5,12 @@ void {mangled_name}_append({content_type}* item){{
 
 void {mangled_name}_print(){{
 }}
+
+{mangled_name}* new_{mangled_name}(){{
+    {mangled_name}* l = ({mangled_name}*)malloc(sizeof({mangled_name}));
+    
+    l->len = 0;
+    l->contents = ({content_type}*)malloc(1);
+
+    return l;
+}}

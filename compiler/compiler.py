@@ -1,6 +1,7 @@
 import ply.lex as lex
 import ply.yacc as yacc
 
+from .cast.utils import SlottedClass, optional
 from .nodes import *
 from .cast import nodes as cnodes
 
@@ -240,8 +241,14 @@ def p_expr(p):
     """expr : call
             | member_access
             | id_expr
+            | int_literal
     """
     p[0] = p[1]
+
+
+def p_int_literal(p):
+    "int_literal : INT"
+    p[0] = Int(int(p[1]))
 
 
 def p_member_access(p):
@@ -306,7 +313,56 @@ BASE_LANG_TYPE_REPLACEMENTS = {
 }
 
 
+BASE_C_TYPES = {
+    "char",
+    "uint32_t",
+    "int32_t",
+    "uint64_t",
+    "int64_t",
+}
+
+
 BASE_LANG_TYPES = set(BASE_LANG_TYPE_REPLACEMENTS.keys())
+
+
+class TypeSignature(SlottedClass):
+    pass
+
+
+class FuncType(TypeSignature):
+    __attrs__ = ("return_type", "arg_types")
+    __types__ = {
+        "return_type": TypeSignature,
+        "arg_types": [TypeSignature]
+    }
+    __defaults__ = {"arg_types": []}
+
+
+class SimpleType(TypeSignature):
+    __attrs__ = ("id",)
+    __types__ = {"id": str}
+
+    def __hash__(self, other):
+        return hash(self.id)
+
+    def __eq__(self, other):
+        return isinstance(other, SimpleType) and (self.id == other.id)
+
+    def __ne__(self, other):
+        return not (self == other)
+
+
+class GenericType(TypeSignature):
+    pass
+
+
+VOID_TYPE = SimpleType("void")
+GENERIC_TYPE = GenericType()
+
+
+BASE_LANG_VARS = {
+    "print": FuncType(VOID_TYPE, [GENERIC_TYPE]),
+}
 
 
 class Compiler:
@@ -317,6 +373,7 @@ class Compiler:
         self.__call_stack = []
 
         self.__known_types = set(BASE_LANG_TYPES)
+        self.__known_vars = dict(BASE_LANG_VARS)
         self.__list_content_types = set()
         self.__pending_includes = set()
         self.__generated_files = set()
@@ -374,13 +431,17 @@ class Compiler:
                 typename.__class__.__name__
             ))
 
+    def mangled_ctor(self, mangled_name):
+        return "new_{}".format(mangled_name)
+
     def __create_list_header(self, contents, mangled_name):
         hdr = mangled_name + ".h"
         with open("compiler/list_hdr.template", "r") as f:
             template = f.read()
             hdr_txt = template.format(
                 mangled_name=mangled_name,
-                content_type=self.mangled_typename(contents)
+                content_type=self.mangled_typename(contents),
+                mangled_ctor=self.mangled_ctor(mangled_name),
             )
         with open(hdr, "w") as f:
             f.write(hdr_txt)
@@ -393,6 +454,7 @@ class Compiler:
             src_txt = template.format(
                 mangled_name=mangled_name,
                 content_type=self.mangled_typename(contents),
+                mangled_ctor=self.mangled_ctor(mangled_name),
                 hdr=hdr,
             )
         with open(src, "w") as f:
@@ -447,14 +509,58 @@ class Compiler:
         else:
             return cnodes.Return()
 
+    def is_base_c_type(self, type_specs, declarator):
+        if not isinstance(declarator, cnodes.ID):
+            return False
+
+        for type_spec in type_specs:
+            if isinstance(type_spec, cnodes.Type) and type_spec.id in BASE_C_TYPES:
+                return True
+
+        return False
+
+    def visit_Int(self, int_node):
+        return cnodes.Int(int_node.n)
+
     def visit_DeclStmt(self, decl_stmt):
         # TODO: Implement for other decls
         assert isinstance(decl_stmt.decl, VarDecl)
 
         type_specs, declarators = self.type_info_from_vardecl(decl_stmt.decl)
 
-        cdecl = cnodes.Decl(type_specs, declarators)
-        return cdecl
+        # Can only declare 1 variable at a time
+        assert len(declarators) == 1
+        declarator = declarators[0]
+        mangled_name = declarator.id
+
+        if self.is_base_c_type(type_specs, declarator):
+            base_val_name = mangled_name + "_base_val"
+            base_declarator = cnodes.ID(base_val_name)
+            ptr_declarator = cnodes.Pointer(declarator)
+
+            if not decl_stmt.decl.expr:
+                base_cdeclarator = base_declarator
+            else:
+                base_cdeclarator = cnodes.InitAssign(
+                    base_declarator,
+                    self.visit(decl_stmt.decl.expr)
+                )
+
+            return cnodes.StmtGroup([
+                cnodes.Decl(type_specs, [base_cdeclarator]),
+                cnodes.Decl(
+                    type_specs,
+                    [cnodes.InitAssign(ptr_declarator, cnodes.ID(base_val_name))]
+                ),
+            ])
+        else:
+            init_assign = cnodes.InitAssign(
+                cnodes.Pointer(declarator),
+
+                # TODO: Handle constructor args
+                cnodes.Call(cnodes.ID(self.mangled_ctor(mangled_name)))
+            )
+            return cnodes.Decl(type_specs, [init_assign])
 
     def visit_Assign(self, assign):
         return cnodes.ExprStmt(cnodes.Assign(

@@ -364,6 +364,16 @@ class SimpleStmt(Stmt, SimpleNode):
     pass
 
 
+class StmtGroup(Stmt, ExternalDecl):
+    __attrs__ = ("stmts",)
+    __types__ = {"stmts": [Stmt]}
+
+    def lines(self):
+        for stmt in self.stmts:
+            for line in stmt.lines():
+                yield line
+
+
 class TypeName(SimpleNode):
     __attrs__ = ("spec_qualifiers", "abstract_declarator")
     __types__ = {

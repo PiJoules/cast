@@ -122,6 +122,14 @@ class ID(TypeName, Expr):
         return self.id
 
 
+class Int(Expr):
+    __attrs__ = ("n",)
+    __types__ = {"n": int}
+
+    def line(self):
+        return str(self.n)
+
+
 class Access(Expr):
     __attrs__ = ("expr", "member")
     __types__ = {

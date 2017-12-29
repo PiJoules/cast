@@ -1,7 +1,7 @@
 code = """char x;
 
 list[uint32] func(){
-    uint32 x;
+    uint32 x = 2;
     list[uint32] l;
     l.append(x);
     return l;
