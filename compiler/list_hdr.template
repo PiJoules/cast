@@ -1,7 +1,7 @@
 #ifndef {mangled_name}_HDR_
 #define {mangled_name}_HDR_
 
-#include <stdlib.h>
+#include "lang.h"
 
 struct {mangled_name} {{
     size_t len;

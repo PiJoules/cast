@@ -297,34 +297,6 @@ def p_error(p):
 parser = yacc.yacc()
 
 
-BASE_C_HEADERS = (
-    "stdint.h",
-    "stdlib.h",
-    "stdio.h",
-)
-
-
-BASE_LANG_TYPE_REPLACEMENTS = {
-    "char": "char",
-    "int32": "int32_t",
-    "int64": "int64_t",
-    "uint32": "uint32_t",
-    "uint64_t": "uint64_t",
-}
-
-
-BASE_C_TYPES = {
-    "char",
-    "uint32_t",
-    "int32_t",
-    "uint64_t",
-    "int64_t",
-}
-
-
-BASE_LANG_TYPES = set(BASE_LANG_TYPE_REPLACEMENTS.keys())
-
-
 class TypeSignature(SlottedClass):
     pass
 
@@ -337,27 +309,83 @@ class FuncType(TypeSignature):
     }
     __defaults__ = {"arg_types": []}
 
+    def __hash__(self):
+        return (hash("FuncType") ^ hash(frozenset(self.arg_types)) ^
+                hash(self.return_type))
+
+    def __eq__(self, other):
+        return super().__eq__(other)
+
+    def __str__(self):
+        return "{}({})".format(
+            self.return_type,
+            ", ".join(str(a) for a in self.arg_types)
+        )
+
 
 class SimpleType(TypeSignature):
     __attrs__ = ("id",)
     __types__ = {"id": str}
 
-    def __hash__(self, other):
+    def __hash__(self):
         return hash(self.id)
 
     def __eq__(self, other):
-        return isinstance(other, SimpleType) and (self.id == other.id)
+        return super().__eq__(other)
 
-    def __ne__(self, other):
-        return not (self == other)
+    def __str__(self):
+        return self.id
+
+
+class ListTypeSig(TypeSignature):
+    __attrs__ = ("contents",)
+    __types__ = {"contents": TypeSignature}
+
+    def __hash__(self):
+        return hash("list") ^ hash(self.contents)
+
+    def __eq__(self, other):
+        return super().__eq__(other)
+
+    def __str__(self):
+        return "list[{}]".format(self.contents)
 
 
 class GenericType(TypeSignature):
-    pass
+    def __hash__(self):
+        return hash("generic")
+
+    def __eq__(self, other):
+        return super().__eq__(other)
+
+    def __str__(self):
+        return "<generic>"
 
 
-VOID_TYPE = SimpleType("void")
 GENERIC_TYPE = GenericType()
+VOID_TYPE = SimpleType("void")
+CHAR_TYPE = SimpleType("char")
+INT32_TYPE = SimpleType("int32")
+
+
+BASE_LANG_TYPE_REPLACEMENTS = {
+    "void": "void",
+    "char": "char",
+    "int32": "int32_t",
+}
+
+
+BASE_C_TYPES = {
+    "char",
+    "int32_t",
+}
+
+
+BASE_LANG_TYPES = {
+    VOID_TYPE,
+    CHAR_TYPE,
+    INT32_TYPE,
+}
 
 
 BASE_LANG_VARS = {
@@ -372,9 +400,9 @@ class Compiler:
         self.__c_ast = None
         self.__call_stack = []
 
-        self.__known_types = set(BASE_LANG_TYPES)
-        self.__known_vars = dict(BASE_LANG_VARS)
-        self.__list_content_types = set()
+        self.__type_frames = [set(BASE_LANG_TYPES)]
+        self.__var_frames = [dict(BASE_LANG_VARS)]
+
         self.__pending_includes = set()
         self.__generated_files = set()
 
@@ -382,6 +410,33 @@ class Compiler:
         module = self.__lang_ast = parser.parse(code)
         self.__c_ast = self.visit(module)
         assert not self.__call_stack
+
+    def type_frame(self):
+        return self.__type_frames[-1]
+
+    def var_frame(self):
+        return self.__var_frames[-1]
+
+    def enter_scope(self):
+        new_type_scope = set(self.type_frame())
+        new_var_scope = dict(self.var_frame())
+        self.__type_frames.append(new_type_scope)
+        self.__var_frames.append(new_var_scope)
+
+    def exit_scope(self):
+        self.__type_frames.pop()
+        self.__var_frames.pop()
+        assert self.__type_frames
+        assert self.__var_frames
+
+    def record_var_type(self, varname, type_sig):
+        self.assert_type_sig_is_known(type_sig)
+        if varname in self.var_frame():
+            raise RuntimeError(
+                "'{}' was already declared in this scope as '{}'"
+                .format(varname, self.var_frame()[varname])
+            )
+        self.var_frame()[varname] = type_sig
 
     def lang_ast(self):
         return self.__lang_ast
@@ -414,23 +469,6 @@ class Compiler:
         for func in self.__call_stack:
             print(func)
 
-    def type_info_from_vardecl(self, vardecl):
-        varname = vardecl.id
-        typename = vardecl.type
-        return self.type_info_from_typename_and_id(typename, varname)
-
-    def mangled_typename(self, typename):
-        if isinstance(typename, ListType):
-            return "{}_list".format(self.mangled_typename(typename.contents))
-        elif isinstance(typename, ID):
-            if typename.id not in self.__known_types:
-                raise RuntimeError("Unknown type '{}'".format(typename.id))
-            return BASE_LANG_TYPE_REPLACEMENTS[typename.id]
-        else:
-            raise NotImplementedError("Unable to mangle typename '{}'".format(
-                typename.__class__.__name__
-            ))
-
     def mangled_ctor(self, mangled_name):
         return "new_{}".format(mangled_name)
 
@@ -440,7 +478,7 @@ class Compiler:
             template = f.read()
             hdr_txt = template.format(
                 mangled_name=mangled_name,
-                content_type=self.mangled_typename(contents),
+                content_type=self.mangled_c_type_from_type_sig(contents),
                 mangled_ctor=self.mangled_ctor(mangled_name),
             )
         with open(hdr, "w") as f:
@@ -453,7 +491,7 @@ class Compiler:
             template = f.read()
             src_txt = template.format(
                 mangled_name=mangled_name,
-                content_type=self.mangled_typename(contents),
+                content_type=self.mangled_c_type_from_type_sig(contents),
                 mangled_ctor=self.mangled_ctor(mangled_name),
                 hdr=hdr,
             )
@@ -461,29 +499,77 @@ class Compiler:
             f.write(src_txt)
         return src
 
-    def type_info_from_typename_and_id(self, typename, varname):
-        mangled_name = self.mangled_typename(typename)
+    def type_signature_from_typename(self, typename):
         if isinstance(typename, ListType):
-            if mangled_name not in self.__list_content_types:
-                hdr = self.__create_list_header(typename.contents, mangled_name)
-                src = self.__create_list_source(typename.contents, mangled_name, hdr)
+            return ListTypeSig(self.type_signature_from_typename(typename.contents))
+        elif isinstance(typename, ID):
+            return SimpleType(typename.id)
+        else:
+            raise NotImplementedError(
+                "Unable to convert typename '{}' to type signature"
+                .format(typename.__class__.__name__)
+            )
+
+    def mangled_c_type_from_type_sig(self, type_sig):
+        if isinstance(type_sig, ListTypeSig):
+            return "{}_list".format(self.mangled_c_type_from_type_sig(type_sig.contents))
+        elif isinstance(type_sig, SimpleType):
+            return type_sig.id
+        else:
+            raise NotImplementedError(
+                "Unable to convert type signature '{}' to mangleed c type"
+                .format(type_sig.__class__.__name__)
+            )
+
+    def type_spec_and_decltor_from_type_signature_and_varname(self, sig, name):
+        if isinstance(sig, ListType):
+            self.try_to_make_list_of(sig.contents)
+            type_specs = [cnodes.Type(mangled_name)]
+            declarators = [cnodes.ID(varname)]
+            return type_specs, declarators
+        elif isinstance(sig, SimpleType):
+            pass
+        else:
+            raise RuntimeError(
+                "Unable to handle type signature '{}'"
+                .format(sig.__class__.__name__)
+            )
+
+    def type_info_from_type_sig_and_name(self, type_sig, varname):
+        mangled_name = self.mangled_c_type_from_type_sig(type_sig)
+        if isinstance(type_sig, ListTypeSig):
+            if type_sig not in self.type_frame():
+                hdr = self.__create_list_header(type_sig.contents, mangled_name)
+                src = self.__create_list_source(type_sig.contents, mangled_name, hdr)
                 self.__generated_files.add(hdr)
                 self.__generated_files.add(src)
 
-                self.__list_content_types.add(mangled_name)
                 self.__pending_includes.add(hdr)
+                self.type_frame().add(type_sig)
 
             type_specs = [cnodes.Type(mangled_name)]
             declarators = [cnodes.ID(varname)]
-            return type_specs, declarators
-        elif isinstance(typename, ID):
+        elif isinstance(type_sig, SimpleType):
             type_specs = [cnodes.Type(mangled_name)]
             declarators = [cnodes.ID(varname)]
-            return type_specs, declarators
         else:
-            raise NotImplementedError("Unable to handle typename '{}'".format(
-                typename.__class__.__name__
+            raise NotImplementedError("Unable to handle type signature '{}'".format(
+                type_sig.__class__.__name__
             ))
+        return type_specs, declarators
+
+    def assert_type_sig_is_known(self, type_sig):
+        if isinstance(type_sig, ListTypeSig):
+            self.assert_type_sig_is_known(type_sig.contents)
+        elif isinstance(type_sig, FuncType):
+            self.assert_type_sig_is_known(type_sig.return_type)
+            for arg_type in type_sig.arg_types:
+                self.assert_type_sig_is_known(arg_type)
+        elif isinstance(type_sig, SimpleType):
+            if type_sig not in self.type_frame():
+                raise RuntimeError("Unknown type '{}'".format(type_sig))
+        else:
+            raise RuntimeError("Unknown type signature '{}'".format(type_sig.__class__.__name__))
 
     def visit_ID(self, id_node):
         return cnodes.ID(id_node.id)
@@ -509,58 +595,45 @@ class Compiler:
         else:
             return cnodes.Return()
 
-    def is_base_c_type(self, type_specs, declarator):
-        if not isinstance(declarator, cnodes.ID):
-            return False
-
-        for type_spec in type_specs:
-            if isinstance(type_spec, cnodes.Type) and type_spec.id in BASE_C_TYPES:
-                return True
-
-        return False
-
     def visit_Int(self, int_node):
         return cnodes.Int(int_node.n)
 
     def visit_DeclStmt(self, decl_stmt):
-        # TODO: Implement for other decls
-        assert isinstance(decl_stmt.decl, VarDecl)
+        declaration = decl_stmt.decl
 
-        type_specs, declarators = self.type_info_from_vardecl(decl_stmt.decl)
+        # TODO: Implement for other decls
+        assert isinstance(declaration, VarDecl)
+
+        decl_type = declaration.type
+        varname = declaration.id
+        init_assign_val = declaration.expr
+
+        type_sig = self.type_signature_from_typename(decl_type)
+        self.assert_type_sig_is_known(type_sig)
+        self.record_var_type(varname, type_sig)
+
+        mangled_name = self.mangled_c_type_from_type_sig(type_sig)
+
+        type_specs, declarators = self.type_info_from_type_sig_and_name(
+            type_sig, varname,
+        )
 
         # Can only declare 1 variable at a time
         assert len(declarators) == 1
         declarator = declarators[0]
-        mangled_name = declarator.id
 
-        if self.is_base_c_type(type_specs, declarator):
-            base_val_name = mangled_name + "_base_val"
-            base_declarator = cnodes.ID(base_val_name)
-            ptr_declarator = cnodes.Pointer(declarator)
-
-            if not decl_stmt.decl.expr:
-                base_cdeclarator = base_declarator
-            else:
-                base_cdeclarator = cnodes.InitAssign(
-                    base_declarator,
-                    self.visit(decl_stmt.decl.expr)
-                )
-
-            return cnodes.StmtGroup([
-                cnodes.Decl(type_specs, [base_cdeclarator]),
-                cnodes.Decl(
-                    type_specs,
-                    [cnodes.InitAssign(ptr_declarator, cnodes.ID(base_val_name))]
-                ),
-            ])
+        if init_assign_val:
+            args = [self.visit(init_assign_val)]
         else:
-            init_assign = cnodes.InitAssign(
-                cnodes.Pointer(declarator),
+            args = []
 
-                # TODO: Handle constructor args
-                cnodes.Call(cnodes.ID(self.mangled_ctor(mangled_name)))
-            )
-            return cnodes.Decl(type_specs, [init_assign])
+        cinit_assign = cnodes.InitAssign(
+            cnodes.Pointer(declarator),
+
+            # TODO: Handle constructor args
+            cnodes.Call(cnodes.ID(self.mangled_ctor(mangled_name)), args)
+        )
+        return cnodes.Decl(type_specs, [cinit_assign])
 
     def visit_Assign(self, assign):
         return cnodes.ExprStmt(cnodes.Assign(
@@ -574,10 +647,21 @@ class Compiler:
         args = func_def.args
         body = func_def.body
 
-        type_specs, declarators = self.type_info_from_typename_and_id(return_t, func_name)
+        return_type_sig = self.type_signature_from_typename(return_t)
+
+        # TODO: Do same for args
+        self.assert_type_sig_is_known(return_type_sig)
+
+        type_specs, declarators = self.type_info_from_type_sig_and_name(return_type_sig, func_name)
         assert len(declarators) == 1
 
+        # TODO: Include args later
+        func_sig = FuncType(return_type_sig)
+
+        self.enter_scope()
+        self.record_var_type(func_name, func_sig)
         cbody = [self.visit(stmt) for stmt in body]
+        self.exit_scope()
 
         cfunc_def = cnodes.FuncDef(
             type_specs,
@@ -587,7 +671,7 @@ class Compiler:
         return cfunc_def
 
     def visit_TranslationUnit(self, tu):
-        includes = [cnodes.Include(h, True) for h in BASE_C_HEADERS]
+        includes = [cnodes.Include("lang.h")]
         stmts = [self.visit(d) for d in tu.external_decls]
         includes += [cnodes.Include(i) for i in self.__pending_includes]
         stmts = includes + stmts
