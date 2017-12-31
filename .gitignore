@@ -110,3 +110,5 @@ compiler/parsetab.py
 # compiler 
 *.c
 *.h
+*.cpp
+*.cc

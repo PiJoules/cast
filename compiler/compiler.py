@@ -6,9 +6,9 @@ from .nodes import *
 from .cast import nodes as cnodes
 
 """
-list[A] func(){
+List[A] func(){
     A a = new(A);
-    list[A] l = new(list[A]);
+    List[A] l = new(List[A]);
     l.append(a);  // l owns a
     print(a);  // a is still alive
     return l;  // Pass ownership to caller
@@ -32,13 +32,13 @@ Dict[A,A] alternative_func2(){
 }
 
 int main(){
-    list[A] l = func();
+    List[A] l = func();
 }
 """
 
 RESERVED = {
     "return": "RETURN",
-    "list": "LIST",
+    "List": "LIST",
 }
 
 tokens = (
@@ -66,7 +66,7 @@ tokens = sorted(tokens)
 
 
 t_RETURN = "return"
-t_LIST = "list"
+t_LIST = "List"
 
 t_INT = r"\d+"
 t_LPAR = r"\("
@@ -342,13 +342,13 @@ class ListTypeSig(TypeSignature):
     __types__ = {"contents": TypeSignature}
 
     def __hash__(self):
-        return hash("list") ^ hash(self.contents)
+        return hash("List") ^ hash(self.contents)
 
     def __eq__(self, other):
         return super().__eq__(other)
 
     def __str__(self):
-        return "list[{}]".format(self.contents)
+        return "List[{}]".format(self.contents)
 
 
 class GenericType(TypeSignature):
@@ -366,19 +366,6 @@ GENERIC_TYPE = GenericType()
 VOID_TYPE = SimpleType("void")
 CHAR_TYPE = SimpleType("char")
 INT32_TYPE = SimpleType("int32")
-
-
-BASE_LANG_TYPE_REPLACEMENTS = {
-    "void": "void",
-    "char": "char",
-    "int32": "int32_t",
-}
-
-
-BASE_C_TYPES = {
-    "char",
-    "int32_t",
-}
 
 
 BASE_LANG_TYPES = {
@@ -472,33 +459,6 @@ class Compiler:
     def mangled_ctor(self, mangled_name):
         return "new_{}".format(mangled_name)
 
-    def __create_list_header(self, contents, mangled_name):
-        hdr = mangled_name + ".h"
-        with open("compiler/list_hdr.template", "r") as f:
-            template = f.read()
-            hdr_txt = template.format(
-                mangled_name=mangled_name,
-                content_type=self.mangled_c_type_from_type_sig(contents),
-                mangled_ctor=self.mangled_ctor(mangled_name),
-            )
-        with open(hdr, "w") as f:
-            f.write(hdr_txt)
-        return hdr
-
-    def __create_list_source(self, contents, mangled_name, hdr):
-        src = mangled_name + ".c"
-        with open("compiler/list_src.template", "r") as f:
-            template = f.read()
-            src_txt = template.format(
-                mangled_name=mangled_name,
-                content_type=self.mangled_c_type_from_type_sig(contents),
-                mangled_ctor=self.mangled_ctor(mangled_name),
-                hdr=hdr,
-            )
-        with open(src, "w") as f:
-            f.write(src_txt)
-        return src
-
     def type_signature_from_typename(self, typename):
         if isinstance(typename, ListType):
             return ListTypeSig(self.type_signature_from_typename(typename.contents))
@@ -512,7 +472,7 @@ class Compiler:
 
     def mangled_c_type_from_type_sig(self, type_sig):
         if isinstance(type_sig, ListTypeSig):
-            return "{}_list".format(self.mangled_c_type_from_type_sig(type_sig.contents))
+            return "List<{}>".format(self.mangled_c_type_from_type_sig(type_sig.contents))
         elif isinstance(type_sig, SimpleType):
             return type_sig.id
         else:
@@ -538,15 +498,6 @@ class Compiler:
     def type_info_from_type_sig_and_name(self, type_sig, varname):
         mangled_name = self.mangled_c_type_from_type_sig(type_sig)
         if isinstance(type_sig, ListTypeSig):
-            if type_sig not in self.type_frame():
-                hdr = self.__create_list_header(type_sig.contents, mangled_name)
-                src = self.__create_list_source(type_sig.contents, mangled_name, hdr)
-                self.__generated_files.add(hdr)
-                self.__generated_files.add(src)
-
-                self.__pending_includes.add(hdr)
-                self.type_frame().add(type_sig)
-
             type_specs = [cnodes.Type(mangled_name)]
             declarators = [cnodes.ID(varname)]
         elif isinstance(type_sig, SimpleType):
@@ -629,9 +580,8 @@ class Compiler:
 
         cinit_assign = cnodes.InitAssign(
             cnodes.Pointer(declarator),
-
-            # TODO: Handle constructor args
-            cnodes.Call(cnodes.ID(self.mangled_ctor(mangled_name)), args)
+            #cnodes.Call(cnodes.ID(self.mangled_ctor(mangled_name)), args)
+            cnodes.New(cnodes.Call(cnodes.ID(mangled_name), args)),
         )
         return cnodes.Decl(type_specs, [cinit_assign])
 
@@ -654,6 +604,7 @@ class Compiler:
 
         type_specs, declarators = self.type_info_from_type_sig_and_name(return_type_sig, func_name)
         assert len(declarators) == 1
+        assert len(type_specs) == 1
 
         # TODO: Include args later
         func_sig = FuncType(return_type_sig)
@@ -665,7 +616,8 @@ class Compiler:
 
         cfunc_def = cnodes.FuncDef(
             type_specs,
-            declarators[0],
+            # TODO: handle args
+            cnodes.Pointer(cnodes.FuncDeclarator(declarators[0])),
             cbody
         )
         return cfunc_def
@@ -673,6 +625,13 @@ class Compiler:
     def visit_TranslationUnit(self, tu):
         includes = [cnodes.Include("lang.h")]
         stmts = [self.visit(d) for d in tu.external_decls]
+
+        stmts.append(cnodes.FuncDef(
+            [cnodes.Type("int")],
+            cnodes.FuncDeclarator(cnodes.ID("main")),
+            [cnodes.ExprStmt(cnodes.Call(cnodes.ID("start")))]
+        ))
+
         includes += [cnodes.Include(i) for i in self.__pending_includes]
         stmts = includes + stmts
         return cnodes.TranslationUnit(stmts)

@@ -1,15 +1,15 @@
 code = """char y;
 
-list[int32] func(){
+List[int32] func(){
     int32 x = 2;
-    list[int32] l;
+    List[int32] l;
     l.append(x);
     return l;
 }
 
-int32 main(){
-    list[int32] l = func();
-    list[int32] l2;
+int32 start(){
+    List[int32] l = func();
+    List[int32] l2;
     l2 = l;
     print(l2);
 }
@@ -27,6 +27,9 @@ def main():
 
     print("\n-------- __main__ ---------")
     print(compiler.c_ast())
+
+    with open("test.cc", "w") as f:
+        f.write(str(compiler.c_ast()))
 
     for fname in compiler.generated_files():
         print("\n-------- {} ---------".format(fname))

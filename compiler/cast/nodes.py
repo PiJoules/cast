@@ -106,6 +106,20 @@ class Declarator(SimpleNode):
     """
 
 
+class Template(SimpleNode):
+    __attrs__ = ("decl_specifier", "declarator")
+    __types__ = {
+        "decl_specifier": DeclSpecifier,
+        "declarator": Declarator,
+    }
+
+    def line(self):
+        return "template <{} {}>".format(
+            self.decl_specifier.line(),
+            self.declarator.line(),
+        )
+
+
 class Expr(SimpleNode):
     def precedence(self):
         raise NotImplementedError
@@ -395,7 +409,7 @@ class TypeName(SimpleNode):
 
 class AtomicExpr(Expr):
     def precedence(self):
-        return 0
+        return -1
 
 
 class ID(AtomicExpr, Declarator):
@@ -440,6 +454,42 @@ class Float(AtomicExpr):
 
     def line(self):
         return str(self.n)
+
+
+class ScopeResExpr(Expr):
+    __attrs__ = ("expr", "member")
+    __types__ = {
+        "expr": optional(Expr),
+        "member": str,
+    }
+    __defaults__ = {"expr": None}
+
+    def precedence(self):
+        return 0
+
+    def line(self):
+        if self.expr:
+            return "{}::{}".format(self.expr.line(), self.member)
+        else:
+            return "::{}".format(self.member)
+
+
+class ScopeRes(Declarator):
+    __attrs__ = ("expr", "member")
+    __types__ = {
+        "expr": optional(Declarator),
+        "member": str,
+    }
+    __defaults__ = {"expr": None}
+
+    def precedence(self):
+        return 0
+
+    def line(self):
+        if self.expr:
+            return "{}::{}".format(self.expr.line(), self.member)
+        else:
+            return "::{}".format(self.member)
 
 
 class Prec1Expr(Expr):
@@ -595,6 +645,14 @@ class Sizeof(Prec2Expr):
 
     def line(self):
         return "sizeof({})".format(self.val.line())
+
+
+class New(Prec2Expr):
+    __attrs__ = ("what",)
+    __types__ = {"what": (Expr, TypeName)}
+
+    def line(self):
+        return "new {}".format(self.what.line())
 
 
 class BinaryExpr(Expr):
@@ -1061,18 +1119,23 @@ class Switch(Stmt):
 
 
 class FuncDef(ExternalDecl):
-    __attrs__ = ("decl_specifiers", "declarator", "stmts")
+    __attrs__ = ("decl_specifiers", "declarator", "stmts", "templates")
     __types__ = {
         "declarator": Declarator,
         "stmts": [Stmt],
         "decl_specifiers": [DeclSpecifier],
+        "templates": [Template],
     }
     __defaults__ = {
         "decl_specifiers": [],
         "stmts": [],
+        "templates": [],
     }
 
     def lines(self):
+        for template in self.templates:
+            yield template.line()
+
         if self.decl_specifiers:
             decl_spec_line = " ".join(d.line() for d in self.decl_specifiers)
             line1 = decl_spec_line + " "

@@ -371,8 +371,31 @@ def main():
                     ),
                     ID("p")
                 )),
+
+                # Scope resolution
+                ExprStmt(ScopeResExpr(
+                    ID("std"),
+                    "vector",
+                )),
+
+                # New object
+                Decl(
+                    [Type("A")],
+                    [InitAssign(Pointer(ID("a")), New(Call(ID("A"))))],
+                ),
             ]
-        )
+        ),
+
+        # Function def with templates
+        FuncDef(
+            [Type("T")],
+            FuncDeclarator("add", Params([
+                ParamDecl([Type("T")], ID("x")),
+                ParamDecl([Type("T")], ID("y")),
+            ])),
+            [Return(Add(ID("x"), ID("y")))],
+            [Template(Type("typename"), ID("T"))]
+        ),
     ])
     print(m)
 
