@@ -655,6 +655,14 @@ class New(Prec2Expr):
         return "new {}".format(self.what.line())
 
 
+class Delete(Prec2Expr):
+    __attrs__ = ("what",)
+    __types__ = {"what": Expr}
+
+    def line(self):
+        return "delete {}".format(self.what.line())
+
+
 class BinaryExpr(Expr):
     __attrs__ = ("lhs", "rhs")
     __types__ = {

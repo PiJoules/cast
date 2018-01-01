@@ -112,3 +112,4 @@ compiler/parsetab.py
 *.h
 *.cpp
 *.cc
+*.out

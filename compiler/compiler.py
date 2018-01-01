@@ -82,6 +82,10 @@ t_EQ = r"=="
 t_ignore = " \t"
 
 
+def t_comment(t):
+    r"[ ]*\#[^\n]*"
+
+
 def t_ID(t):
     r"[a-zA-Z_][a-zA-Z0-9_]*"
     t.type = RESERVED.get(t.value, "ID")
@@ -365,13 +369,18 @@ class GenericType(TypeSignature):
 GENERIC_TYPE = GenericType()
 VOID_TYPE = SimpleType("void")
 CHAR_TYPE = SimpleType("char")
-INT32_TYPE = SimpleType("int32")
+INT_TYPE = SimpleType("int")
 
 
 BASE_LANG_TYPES = {
     VOID_TYPE,
     CHAR_TYPE,
-    INT32_TYPE,
+    INT_TYPE,
+}
+
+
+C_TYPE_MAPPING = {
+    "int": "Integer",
 }
 
 
@@ -389,6 +398,7 @@ class Compiler:
 
         self.__type_frames = [set(BASE_LANG_TYPES)]
         self.__var_frames = [dict(BASE_LANG_VARS)]
+        self.__objs_owned_by_frames = [set()]
 
         self.__pending_includes = set()
         self.__generated_files = set()
@@ -404,20 +414,30 @@ class Compiler:
     def var_frame(self):
         return self.__var_frames[-1]
 
+    def objs_owned_by_frame(self):
+        return self.__objs_owned_by_frames[-1]
+
     def enter_scope(self):
         new_type_scope = set(self.type_frame())
         new_var_scope = dict(self.var_frame())
         self.__type_frames.append(new_type_scope)
         self.__var_frames.append(new_var_scope)
+        self.__objs_owned_by_frames.append(set())
 
     def exit_scope(self):
         self.__type_frames.pop()
         self.__var_frames.pop()
+        self.__objs_owned_by_frames.pop()
         assert self.__type_frames
         assert self.__var_frames
+        assert self.__objs_owned_by_frames
 
     def record_var_type(self, varname, type_sig):
         self.assert_type_sig_is_known(type_sig)
+
+        if not isinstance(type_sig, FuncType):
+            self.objs_owned_by_frame().add(varname)
+
         if varname in self.var_frame():
             raise RuntimeError(
                 "'{}' was already declared in this scope as '{}'"
@@ -459,6 +479,9 @@ class Compiler:
     def mangled_ctor(self, mangled_name):
         return "new_{}".format(mangled_name)
 
+    def convert_c_primitive_type(self, id):
+        return C_TYPE_MAPPING.get(id, id)
+
     def type_signature_from_typename(self, typename):
         if isinstance(typename, ListType):
             return ListTypeSig(self.type_signature_from_typename(typename.contents))
@@ -472,9 +495,9 @@ class Compiler:
 
     def mangled_c_type_from_type_sig(self, type_sig):
         if isinstance(type_sig, ListTypeSig):
-            return "List<{}>".format(self.mangled_c_type_from_type_sig(type_sig.contents))
+            return "List<{}>".format(self.mangled_c_type_from_type_sig(type_sig.contents) + "*")
         elif isinstance(type_sig, SimpleType):
-            return type_sig.id
+            return self.convert_c_primitive_type(type_sig.id)
         else:
             raise NotImplementedError(
                 "Unable to convert type signature '{}' to mangleed c type"
@@ -488,7 +511,7 @@ class Compiler:
             declarators = [cnodes.ID(varname)]
             return type_specs, declarators
         elif isinstance(sig, SimpleType):
-            pass
+            raise NotImplementedError
         else:
             raise RuntimeError(
                 "Unable to handle type signature '{}'"
@@ -547,7 +570,7 @@ class Compiler:
             return cnodes.Return()
 
     def visit_Int(self, int_node):
-        return cnodes.Int(int_node.n)
+        return cnodes.New(cnodes.Call(cnodes.ID("Integer"), [cnodes.Int(int_node.n)]))
 
     def visit_DeclStmt(self, decl_stmt):
         declaration = decl_stmt.decl
@@ -574,15 +597,15 @@ class Compiler:
         declarator = declarators[0]
 
         if init_assign_val:
-            args = [self.visit(init_assign_val)]
+            cinit_assign = cnodes.InitAssign(
+                cnodes.Pointer(declarator),
+                self.visit(init_assign_val)
+            )
         else:
-            args = []
-
-        cinit_assign = cnodes.InitAssign(
-            cnodes.Pointer(declarator),
-            #cnodes.Call(cnodes.ID(self.mangled_ctor(mangled_name)), args)
-            cnodes.New(cnodes.Call(cnodes.ID(mangled_name), args)),
-        )
+            cinit_assign = cnodes.InitAssign(
+                cnodes.Pointer(declarator),
+                cnodes.New(cnodes.Call(cnodes.ID(mangled_name))),
+            )
         return cnodes.Decl(type_specs, [cinit_assign])
 
     def visit_Assign(self, assign):
@@ -610,8 +633,14 @@ class Compiler:
         func_sig = FuncType(return_type_sig)
 
         self.enter_scope()
+
         self.record_var_type(func_name, func_sig)
         cbody = [self.visit(stmt) for stmt in body]
+        objs_owned_by_func = self.objs_owned_by_frame()
+
+        for varname in objs_owned_by_func:
+            cbody.append(cnodes.ExprStmt(cnodes.Delete(cnodes.ID(varname))))
+
         self.exit_scope()
 
         cfunc_def = cnodes.FuncDef(

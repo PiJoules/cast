@@ -1,15 +1,15 @@
-code = """char y;
+code = """# char y;
 
-List[int32] func(){
-    int32 x = 2;
-    List[int32] l;
+List[int] func(){
+    int x = 2;
+    List[int] l;
     l.append(x);
     return l;
 }
 
-int32 start(){
-    List[int32] l = func();
-    List[int32] l2;
+int start(){
+    List[int] l = func();
+    List[int] l2;
     l2 = l;
     print(l2);
 }
