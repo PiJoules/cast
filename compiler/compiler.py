@@ -327,6 +327,23 @@ class FuncType(TypeSignature):
         )
 
 
+class MemberType(TypeSignature):
+    __attrs__ = ("cls", "method")
+    __types__ = {
+        "cls": TypeSignature,
+        "method": str,
+    }
+
+    def __hash__(self):
+        return hash("MemberType") ^ hash(self.cls) ^ hash(self.method)
+
+    def __eq__(self, other):
+        return super().__eq__(other)
+
+    def __str__(self):
+        return "{}.{}".format(self.cls, self.method)
+
+
 class SimpleType(TypeSignature):
     __attrs__ = ("id",)
     __types__ = {"id": str}
@@ -435,8 +452,7 @@ class Compiler:
     def record_var_type(self, varname, type_sig):
         self.assert_type_sig_is_known(type_sig)
 
-        if not isinstance(type_sig, FuncType):
-            self.objs_owned_by_frame().add(varname)
+        self.objs_owned_by_frame().add(varname)
 
         if varname in self.var_frame():
             raise RuntimeError(
@@ -454,9 +470,9 @@ class Compiler:
     def generated_files(self):
         return self.__generated_files
 
-    def visit(self, node):
+    def __node_visit(self, prefix, node):
         name = node.__class__.__name__
-        method_name = "visit_" + name
+        method_name = prefix + "_" + name
         self.__call_stack.append(method_name)
 
         if hasattr(self, method_name):
@@ -467,9 +483,18 @@ class Compiler:
         else:
             self.__dump_call_stack()
             raise NotImplementedError(
-                "No visit method implemented for node '{}'".format(
-                    name
+                "No {} method implemented for node '{}'".format(
+                    prefix, name
                 ))
+
+    def infer(self, expr):
+        assert isinstance(expr, Expr)
+        ret = self.__node_visit("infer", expr)
+        assert isinstance(ret, TypeSignature)
+        return ret
+
+    def visit(self, node):
+        return self.__node_visit("visit", node)
 
     def __dump_call_stack(self):
         print("------- Visitor Stack -------")
@@ -545,6 +570,12 @@ class Compiler:
         else:
             raise RuntimeError("Unknown type signature '{}'".format(type_sig.__class__.__name__))
 
+    def infer_ID(self, id):
+        return self.var_frame()[id.id]
+
+    def infer_Access(self, access):
+        return MemberType(self.infer(access.expr), access.member)
+
     def visit_ID(self, id_node):
         return cnodes.ID(id_node.id)
 
@@ -555,19 +586,43 @@ class Compiler:
         )
 
     def visit_Call(self, call):
+        caller = call.expr
+        args = call.args
+        caller_type = self.infer(caller)
+        if (isinstance(caller_type, MemberType) and
+            isinstance(caller_type.cls, ListTypeSig) and
+            caller_type.method == "append"):
+            # Ownership transfered to list
+            assert len(args) == 1
+            if isinstance(args[0], ID):
+                self.objs_owned_by_frame().remove(args[0].id)
+
         return cnodes.Call(
-            self.visit(call.expr),
-            [self.visit(a) for a in call.args]
+            self.visit(caller),
+            [self.visit(a) for a in args]
         )
 
     def visit_ExprStmt(self, expr_stmt):
         return cnodes.ExprStmt(self.visit(expr_stmt.expr))
 
     def visit_Return(self, return_stmt):
+        stmts = []
+
+        return_name = None
+        if return_stmt.expr and isinstance(return_stmt.expr, ID):
+            return_name = return_stmt.expr.id
+
+        objs_owned_by_func = self.objs_owned_by_frame()
+        for varname in objs_owned_by_func:
+            if varname != return_name:
+                stmts.append(cnodes.ExprStmt(cnodes.Delete(cnodes.ID(varname))))
+
         if return_stmt.expr:
-            return cnodes.Return(self.visit(return_stmt.expr))
+            stmts.append(cnodes.Return(self.visit(return_stmt.expr)))
         else:
-            return cnodes.Return()
+            stmts.append(cnodes.Return())
+
+        return cnodes.StmtGroup(stmts)
 
     def visit_Int(self, int_node):
         return cnodes.New(cnodes.Call(cnodes.ID("Integer"), [cnodes.Int(int_node.n)]))
@@ -597,6 +652,9 @@ class Compiler:
         declarator = declarators[0]
 
         if init_assign_val:
+            if isinstance(init_assign_val, ID):
+                self.objs_owned_by_frame().remove(init_assign_val.id)
+
             cinit_assign = cnodes.InitAssign(
                 cnodes.Pointer(declarator),
                 self.visit(init_assign_val)
@@ -609,10 +667,21 @@ class Compiler:
         return cnodes.Decl(type_specs, [cinit_assign])
 
     def visit_Assign(self, assign):
-        return cnodes.ExprStmt(cnodes.Assign(
+        stmts = []
+
+        if isinstance(assign.expr, ID):
+            # New owner is lhs
+            # Will need to delete old data of lhs
+            self.objs_owned_by_frame().remove(assign.expr.id)
+
+            stmts.append(cnodes.ExprStmt(cnodes.Delete(self.visit(assign.assignable))))
+
+        stmts.append(cnodes.ExprStmt(cnodes.Assign(
             self.visit(assign.assignable),
             self.visit(assign.expr)
-        ))
+        )))
+
+        return cnodes.StmtGroup(stmts)
 
     def visit_FuncDef(self, func_def):
         return_t = func_def.return_type
@@ -632,9 +701,9 @@ class Compiler:
         # TODO: Include args later
         func_sig = FuncType(return_type_sig)
 
+        self.record_var_type(func_name, func_sig)
         self.enter_scope()
 
-        self.record_var_type(func_name, func_sig)
         cbody = [self.visit(stmt) for stmt in body]
         objs_owned_by_func = self.objs_owned_by_frame()
 
